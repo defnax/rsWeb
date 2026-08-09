@@ -1,0 +1,293 @@
+/* RetroShare WebUI Auth Portal Stylesheet (rsWeb Custom Extensions) */
+
+:root {
+  --auth-bg: #0b0f19;
+  --auth-card-bg: rgba(23, 31, 51, 0.95);
+  --auth-border: rgba(255, 255, 255, 0.15);
+  --auth-primary: #00b4d8;
+  --auth-primary-hover: #0096c7;
+  --auth-gradient: linear-gradient(135deg, #00b4d8 0%, #7209b7 100%);
+  --auth-text: #ffffff;
+  --auth-text-muted: #94a3b8;
+  --auth-input-bg: #1e293b;
+  --auth-error: #ef4444;
+  --auth-success: #10b981;
+}
+
+#rs-auth-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: var(--auth-bg);
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(0, 180, 216, 0.15) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(114, 9, 183, 0.15) 0px, transparent 50%);
+  z-index: 999999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: #ffffff;
+  overflow-y: auto;
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+.rs-auth-card {
+  width: 100%;
+  max-width: 440px;
+  background: var(--auth-card-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--auth-border);
+  border-radius: 20px;
+  padding: 32px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  animation: rsAuthFadeIn 0.3s ease-out;
+}
+
+@keyframes rsAuthFadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.rs-auth-header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.rs-auth-logo {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 16px;
+  background: var(--auth-gradient);
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 10px 20px rgba(0, 180, 216, 0.3);
+}
+
+.rs-auth-logo img {
+  width: 40px;
+  height: 40px;
+}
+
+.rs-auth-title {
+  font-size: 24px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  letter-spacing: -0.5px;
+  color: #ffffff;
+}
+
+.rs-auth-subtitle {
+  font-size: 14px;
+  color: var(--auth-text-muted);
+  margin: 0;
+}
+
+/* Tabs */
+.rs-auth-tabs {
+  display: flex;
+  background: rgba(15, 23, 42, 0.8);
+  border-radius: 12px;
+  padding: 4px;
+  margin-bottom: 24px;
+  border: 1px solid var(--auth-border);
+}
+
+.rs-auth-tab {
+  flex: 1;
+  padding: 12px 14px;
+  border: none;
+  background: transparent;
+  color: var(--auth-text-muted);
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: center;
+}
+
+.rs-auth-tab.active {
+  background: var(--auth-primary);
+  color: #ffffff !important;
+  box-shadow: 0 4px 12px rgba(0, 180, 216, 0.4);
+}
+
+/* Forms */
+.rs-auth-form-group {
+  margin-bottom: 18px;
+  text-align: left;
+}
+
+.rs-auth-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #cbd5e1;
+  margin-bottom: 8px;
+}
+
+.rs-auth-input, .rs-auth-select {
+  width: 100%;
+  padding: 14px 16px;
+  background-color: #1e293b !important;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+  font-size: 15px;
+  box-sizing: border-box;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  font-family: inherit;
+  opacity: 1 !important;
+}
+
+.rs-auth-input::placeholder {
+  color: #94a3b8 !important;
+  -webkit-text-fill-color: #94a3b8 !important;
+  opacity: 1;
+}
+
+.rs-auth-select option {
+  background-color: #0f172a !important;
+  color: #ffffff !important;
+}
+
+.rs-auth-input:focus, .rs-auth-select:focus {
+  border-color: var(--auth-primary);
+  box-shadow: 0 0 0 3px rgba(0, 180, 216, 0.3);
+}
+
+.rs-auth-btn {
+  width: 100%;
+  padding: 14px;
+  background: var(--auth-gradient);
+  border: none;
+  border-radius: 10px;
+  color: #ffffff !important;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.1s;
+  margin-top: 10px;
+  box-shadow: 0 8px 16px rgba(0, 180, 216, 0.3);
+}
+
+.rs-auth-btn:hover {
+  opacity: 0.95;
+}
+
+.rs-auth-btn:active {
+  transform: scale(0.99);
+}
+
+.rs-auth-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Status Alert */
+.rs-auth-alert {
+  padding: 12px 16px;
+  border-radius: 10px;
+  font-size: 13px;
+  margin-bottom: 18px;
+  display: none;
+}
+
+.rs-auth-alert.error {
+  display: block;
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+}
+
+.rs-auth-alert.success {
+  display: block;
+  background: rgba(16, 185, 129, 0.2);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #6ee7b7;
+}
+
+.rs-auth-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-radius: 50%;
+  border-top-color: #fff;
+  animation: rsSpin 0.8s linear infinite;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+@keyframes rsSpin {
+  to { transform: rotate(360deg); }
+}
+
+.rs-account-preview {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px dashed var(--auth-border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #e2e8f0;
+  line-height: 1.5;
+}
+
+/* ==========================================================================
+   Mobile Responsive & Sidebar Accessibility Overrides (rsWeb Extensions)
+   ========================================================================== */
+
+/* 1. Left Navigation Menu (.nav-menu) Scrollability & Logout Access */
+.nav-menu {
+  max-height: 100vh !important;
+  max-height: 100dvh !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  -webkit-overflow-scrolling: touch !important;
+  scrollbar-width: none !important;
+  z-index: 1000 !important;
+}
+
+.nav-menu::-webkit-scrollbar {
+  display: none !important;
+}
+
+.nav-menu__box {
+  padding-bottom: 60px !important;
+}
+
+/* 2. Bottom Statusbar (.statusbar) Mobile Safe Area Fix */
+.statusbar {
+  position: relative !important;
+  bottom: 0 !important;
+  padding-bottom: env(safe-area-inset-bottom, 6px) !important;
+  z-index: 999 !important;
+  box-sizing: border-box !important;
+}
+
+/* 3. Main Body & Viewport Responsive Containers */
+html, body {
+  max-width: 100vw !important;
+  overflow-x: hidden !important;
+}
+
+#main, .main-container, .tab-content, .content, .node-panel {
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  overflow-x: hidden !important;
+}
+
+/* 4. Suppress fallback RSNewWebUI login form when auth overlay is present */
+#rs-auth-overlay ~ #main {
+  display: none !important;
+}

@@ -66,3 +66,27 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 }
+
+// Automatically ensure rsweb/auth.js and auth.css are injected into assets/webui/index.html before build
+tasks.register("patchIndexHtml") {
+    doLast {
+        val indexHtmlFile = file("src/main/assets/webui/index.html")
+        if (indexHtmlFile.exists()) {
+            var content = indexHtmlFile.readText()
+            if (!content.contains("rsweb/auth.js")) {
+                val injection = """
+    <link rel="stylesheet" href="../rsweb/auth.css" />
+    <script src="../rsweb/auth.js"></script>
+    <script src="app.js"></script>""".trimIndent()
+                content = content.replace("<script src=\"app.js\"></script>", injection)
+                indexHtmlFile.writeText(content)
+                logger.lifecycle("[RSWeb] Automatically patched webui/index.html with custom auth portal")
+            }
+        }
+    }
+}
+
+tasks.named("preBuild") {
+    dependsOn("patchIndexHtml")
+}
+

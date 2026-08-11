@@ -13,6 +13,8 @@ import android.webkit.WebViewClient
 import android.widget.ProgressBar
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 
 /**
  * Fullscreen WebView Activity hosting the RSNewWebUI interface.
@@ -32,6 +34,13 @@ class WebUIActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_webui)
+
+        val rootView = findViewById<View>(R.id.rootView)
+        ViewCompat.setOnApplyWindowInsetsListener(rootView) { v, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+            insets
+        }
 
         webView = findViewById(R.id.webView)
         progressBar = findViewById(R.id.progressBar)
@@ -65,24 +74,6 @@ class WebUIActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 progressBar.visibility = View.GONE
-                val injectScript = """
-                    (function() {
-                        if (!document.getElementById('rsweb-auth-css')) {
-                            var link = document.createElement('link');
-                            link.id = 'rsweb-auth-css';
-                            link.rel = 'stylesheet';
-                            link.href = '../rsweb/auth.css';
-                            document.head.appendChild(link);
-                        }
-                        if (!document.getElementById('rsweb-auth-js')) {
-                            var script = document.createElement('script');
-                            script.id = 'rsweb-auth-js';
-                            script.src = '../rsweb/auth.js';
-                            document.head.appendChild(script);
-                        }
-                    })();
-                """.trimIndent()
-                view?.evaluateJavascript(injectScript, null)
             }
 
             override fun onReceivedError(
@@ -93,6 +84,34 @@ class WebUIActivity : AppCompatActivity() {
                 if (request?.isForMainFrame == true && request.url.toString() != WEBUI_ASSET_URL) {
                     webView.loadUrl(WEBUI_ASSET_URL)
                 }
+            }
+
+            override fun shouldInterceptRequest(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): android.webkit.WebResourceResponse? {
+                val url = request?.url?.toString() ?: ""
+                if (url.endsWith("/index.html") || url == WEBUI_ASSET_URL) {
+                    try {
+                        val inputStream = assets.open("webui/index.html")
+                        var html = inputStream.bufferedReader().use { it.readText() }
+                        if (!html.contains("rsweb/auth.js")) {
+                            val injection = """
+    <link rel="stylesheet" href="../rsweb/auth.css" />
+    <script src="../rsweb/auth.js"></script>
+    <script src="app.js"></script>""".trimIndent()
+                            html = html.replace("<script src=\"app.js\"></script>", injection)
+                        }
+                        return android.webkit.WebResourceResponse(
+                            "text/html",
+                            "UTF-8",
+                            html.byteInputStream()
+                        )
+                    } catch (e: Exception) {
+                        android.util.Log.e("WebUIActivity", "Error loading index.html", e)
+                    }
+                }
+                return super.shouldInterceptRequest(view, request)
             }
         }
     }

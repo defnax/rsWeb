@@ -1,15 +1,15 @@
 package org.retroshare.rsweb
 
 import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
 import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 
 /**
  * Main Android dashboard control panel.
@@ -21,17 +21,22 @@ class MainActivity : AppCompatActivity() {
     private lateinit var txtStatus: TextView
     private lateinit var btnOpenWebUI: Button
     private lateinit var btnToggleService: Button
-    private lateinit var btnOpenBrowser: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        val mainRoot = findViewById<View>(R.id.mainRoot)
+        ViewCompat.setOnApplyWindowInsetsListener(mainRoot) { v, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+            insets
+        }
+
         statusIndicator = findViewById(R.id.statusIndicator)
         txtStatus = findViewById(R.id.txtStatus)
         btnOpenWebUI = findViewById(R.id.btnOpenWebUI)
         btnToggleService = findViewById(R.id.btnToggleService)
-        btnOpenBrowser = findViewById(R.id.btnOpenBrowser)
 
         requestNotificationPermission()
         startRetroShareService()
@@ -77,15 +82,6 @@ class MainActivity : AppCompatActivity() {
             }
             updateStatusUI()
         }
-
-        // Open in external browser
-        btnOpenBrowser.setOnClickListener {
-            if (!RetroShareService.isRunning) {
-                RetroShareService.start(this)
-            }
-            val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("http://127.0.0.1:9090/index.html"))
-            startActivity(browserIntent)
-        }
     }
 
     private fun startRetroShareService() {
@@ -98,12 +94,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateStatusUI() {
         if (RetroShareService.isRunning) {
-            txtStatus.text = "Node Service: Active (127.0.0.1:9092)"
-            statusIndicator.setBackgroundColor(ContextCompat.getColor(this, R.color.status_green))
+            txtStatus.text = "Node Service: Active"
+            statusIndicator.setBackgroundResource(R.drawable.status_dot_green)
             btnToggleService.text = "Stop Background Node"
         } else {
             txtStatus.text = "Node Service: Stopped"
-            statusIndicator.setBackgroundColor(ContextCompat.getColor(this, R.color.status_red))
+            statusIndicator.setBackgroundResource(R.drawable.status_dot_red)
             btnToggleService.text = "Start Background Node"
         }
     }

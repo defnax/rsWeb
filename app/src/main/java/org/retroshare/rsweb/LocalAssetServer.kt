@@ -82,7 +82,11 @@ class LocalAssetServer(
                     }
                 }
 
-                if (method.equals("POST", ignoreCase = true) && (path.startsWith("/rsLoginHelper") || path.startsWith("/rsApi"))) {
+                // Proxy ALL RetroShare JSON-API calls to the daemon on port 9092.
+                // This covers every /rs* endpoint: /rsLoginHelper, /rsPeers, /rsEvents,
+                // /rsIdentity, /rsConfig, /rsMail, /rsFiles, /rsGxs*, etc.
+                if ((method.equals("POST", ignoreCase = true) || method.equals("OPTIONS", ignoreCase = true))
+                    && path.startsWith("/rs")) {
                     val bodyChars = CharArray(contentLength)
                     if (contentLength > 0) {
                         var read = 0
@@ -106,18 +110,10 @@ class LocalAssetServer(
                 val assetPath = path.removePrefix("/")
                 try {
                     val inputStream = context.assets.open(assetPath)
-                    val mimeType = getMimeType(assetPath)
-                    var bytes = inputStream.readBytes()
-                    inputStream.close()
 
-                    if (assetPath == "webui/index.html") {
-                        val rawHtml = String(bytes, Charsets.UTF_8)
-                        val injectedHtml = rawHtml.replace(
-                            "</head>",
-                            "<link rel=\"stylesheet\" href=\"/rsweb/auth.css\" /><script src=\"/rsweb/auth.js\"></script></head>"
-                        )
-                        bytes = injectedHtml.toByteArray(Charsets.UTF_8)
-                    }
+                    val mimeType = getMimeType(assetPath)
+                    val bytes = inputStream.readBytes()
+                    inputStream.close()
 
                     val header = "HTTP/1.1 200 OK\r\n" +
                             "Content-Type: $mimeType\r\n" +
@@ -144,8 +140,9 @@ class LocalAssetServer(
             val conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.doOutput = true
-            conn.connectTimeout = 3000
-            conn.readTimeout = 5000
+            conn.connectTimeout = 5000
+            // The event-queue endpoint is a long-poll — give it a much longer read timeout.
+            conn.readTimeout = if (path.contains("registerEventsHandler") || path.contains("EventQueue")) 120_000 else 10_000
 
             reqHeaders.forEach { (k, v) ->
                 if (!k.equals("Host", ignoreCase = true) && !k.equals("Content-Length", ignoreCase = true)) {

@@ -68,4 +68,3 @@ implementation("org.retroshare.service:libretroshare-MinApiLevel24-debug:46e3789
 ### 4. Running the App
 - Upon launching `rsWeb`, the background foreground service initializes RetroShare's JSON API on `127.0.0.1:9092` and the local asset server on `127.0.0.1:9090`.
 - Tap **"OPEN RETROSHARE WEBUI"** to launch the embedded WebView.
-- Tap **"OPEN IN EXTERNAL BROWSER"** to open `http://127.0.0.1:9090/index.html` in your device's default web browser.

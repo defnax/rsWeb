@@ -1,7 +1,39 @@
+import java.io.ByteArrayOutputStream
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+fun fetchGitHash(): String {
+    return try {
+        val stdout = ByteArrayOutputStream()
+        exec {
+            commandLine("git", "rev-parse", "--short", "HEAD")
+            standardOutput = stdout
+        }
+        stdout.toString().trim().ifEmpty { "unknown" }
+    } catch (e: Exception) {
+        "unknown"
+    }
+}
+
+fun fetchGitCommitCount(): Int {
+    return try {
+        val stdout = ByteArrayOutputStream()
+        exec {
+            commandLine("git", "rev-list", "--count", "HEAD")
+            standardOutput = stdout
+        }
+        stdout.toString().trim().toIntOrNull() ?: 1
+    } catch (e: Exception) {
+        1
+    }
+}
+
+val gitHash = fetchGitHash()
+val gitCommitCount = fetchGitCommitCount()
+val baseVersionName = "0.0.1"
 
 android {
     namespace = "org.retroshare.rsweb"
@@ -11,14 +43,21 @@ android {
         applicationId = "org.retroshare.rsweb"
         minSdk = 28
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = gitCommitCount
+        versionName = "$baseVersionName-g$gitHash"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
         ndk {
             abiFilters.addAll(setOf("arm64-v8a", "x86_64"))
         }
+
+        buildConfigField("String", "GIT_HASH", "\"$gitHash\"")
+        buildConfigField("String", "BUILD_VERSION", "\"$baseVersionName-g$gitHash\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     buildTypes {
@@ -53,6 +92,14 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+        }
+    }
+
+    applicationVariants.all {
+        val variant = this
+        variant.outputs.all {
+            val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
+            output.outputFileName = "rsWeb-v${variant.versionName}-${variant.name}.apk"
         }
     }
 }

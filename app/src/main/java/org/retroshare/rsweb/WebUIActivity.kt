@@ -1,8 +1,10 @@
 package org.retroshare.rsweb
 
 import android.annotation.SuppressLint
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.webkit.WebResourceError
@@ -15,6 +17,8 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 
 /**
  * Fullscreen WebView Activity hosting the RSNewWebUI interface.
@@ -45,10 +49,25 @@ class WebUIActivity : AppCompatActivity() {
         webView = findViewById(R.id.webView)
         progressBar = findViewById(R.id.progressBar)
 
+        requestNotificationPermission()
+        RetroShareService.start(this)
         setupWebViewSettings()
         setupWebViewClient()
 
         loadWebInterface()
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                101
+            )
+        }
     }
 
     private fun setupWebViewSettings() {

@@ -86,7 +86,7 @@ class RetroShareService : RsService() {
                 .createNotificationChannel(channel)
         }
 
-        val notificationIntent = Intent(this, MainActivity::class.java)
+        val notificationIntent = Intent(this, WebUIActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
             this, 0, notificationIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT

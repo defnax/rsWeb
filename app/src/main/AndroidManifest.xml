@@ -22,30 +22,30 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.RSWeb">
 
-        <!-- Main Dashboard Activity -->
+        <!-- Legacy service dashboard (not part of the normal app flow) -->
         <activity
             android:name=".MainActivity"
-            android:exported="true"
+            android:exported="false"
             android:label="RetroShare Control Center"
-            android:configChanges="orientation|screenSize|keyboardHidden">
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+
+        <!-- Single app entry point: auth portal, then the WebUI -->
+        <activity
+            android:name=".WebUIActivity"
+            android:exported="true"
+            android:label="RetroShare WebUI"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.RSWeb.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <!-- Fullscreen WebUI View -->
-        <activity
-            android:name=".WebUIActivity"
-            android:exported="false"
-            android:label="RetroShare WebUI"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:theme="@style/Theme.RSWeb.NoActionBar" />
-
         <!-- Background Service running libretroshare C++ node -->
         <activity-alias
             android:name=".ServiceActivity"
-            android:targetActivity=".MainActivity"
+            android:targetActivity=".WebUIActivity"
             android:exported="false" />
 
         <service

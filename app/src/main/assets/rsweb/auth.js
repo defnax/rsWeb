@@ -200,41 +200,36 @@
     overlay.innerHTML = `
       <div class="rs-auth-card">
         <div class="rs-auth-header">
-          <div class="rs-auth-logo">
-            <img src="images/retroshare.svg" alt="RetroShare Logo" />
-          </div>
-          <h2 class="rs-auth-title">RetroShare Web</h2>
-          <p class="rs-auth-subtitle">Decentralized Web Interface</p>
-        </div>
-        <div class="rs-auth-tabs">
-          <button class="rs-auth-tab active" data-tab="login">Login</button>
-          <button class="rs-auth-tab" data-tab="create">Create Profile</button>
+          <img class="rs-auth-logo" src="images/retroshare.svg" alt="RetroShare" />
+          <h1 class="rs-auth-title">RetroShare <span>Web</span></h1>
+          <p id="rs-auth-subtitle" class="rs-auth-subtitle">Welcome back. Sign in to your profile.</p>
         </div>
         <div id="rs-auth-alert" class="rs-auth-alert"></div>
         <form id="rs-form-login">
           <div class="rs-auth-form-group">
-            <label class="rs-auth-label" for="rs-login-account">Select Profile / Node</label>
+            <label class="rs-auth-label" for="rs-login-account">Select Profile</label>
             <select id="rs-login-account" class="rs-auth-select">
-              <option value="">Loading node profiles...</option>
+              <option value="">Loading profiles...</option>
             </select>
           </div>
           <div class="rs-auth-form-group">
             <label class="rs-auth-label" for="rs-login-password">Password</label>
             <input type="password" id="rs-login-password" class="rs-auth-input"
-              placeholder="Enter node password" autocomplete="current-password" required />
+              placeholder="Enter password" autocomplete="current-password" required />
           </div>
           <button type="submit" id="rs-btn-login" class="rs-auth-btn">Log In</button>
+          <p class="rs-auth-switch">Don't have a profile? <button type="button" data-show-form="create">Create one</button></p>
         </form>
         <form id="rs-form-create" style="display:none;">
           <div class="rs-auth-form-group">
-            <label class="rs-auth-label" for="rs-create-username">PGP Profile Name</label>
+            <label class="rs-auth-label" for="rs-create-username">Profile Name</label>
             <input type="text" id="rs-create-username" class="rs-auth-input"
               placeholder="e.g. Alice" autocomplete="username" required />
           </div>
           <div class="rs-auth-form-group">
-            <label class="rs-auth-label" for="rs-create-nodename">Node Location Name</label>
+            <label class="rs-auth-label" for="rs-create-nodename">Location Name</label>
             <input type="text" id="rs-create-nodename" class="rs-auth-input"
-              placeholder="e.g. Phone Node" value="WebUI Node" required />
+              placeholder="e.g. Phone" value="WebUI" required />
           </div>
           <div class="rs-auth-form-group">
             <label class="rs-auth-label" for="rs-create-password">Password</label>
@@ -246,8 +241,14 @@
             <input type="password" id="rs-create-confirm" class="rs-auth-input"
               placeholder="Repeat password" autocomplete="new-password" required />
           </div>
-          <button type="submit" id="rs-btn-create" class="rs-auth-btn">Create Node Profile</button>
+          <button type="submit" id="rs-btn-create" class="rs-auth-btn">Create Profile</button>
+          <p class="rs-auth-switch">Already have a profile? <button type="button" data-show-form="login">Log in</button></p>
         </form>
+        <div class="rs-service-status" role="status" aria-live="polite">
+          <span id="rs-service-dot" class="rs-service-dot is-checking"></span>
+          <span>RetroShare service</span>
+          <strong id="rs-service-label">Checking...</strong>
+        </div>
       </div>`;
 
     document.body.appendChild(overlay);
@@ -256,20 +257,34 @@
   }
 
   function setupEventListeners() {
-    const tabs = document.querySelectorAll('.rs-auth-tab');
-    tabs.forEach(tab => {
-      tab.addEventListener('click', e => {
+    document.querySelectorAll('[data-show-form]').forEach(button => {
+      button.addEventListener('click', e => {
         e.preventDefault();
-        tabs.forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-        const t = tab.getAttribute('data-tab');
-        document.getElementById('rs-form-login').style.display  = t === 'login'  ? 'block' : 'none';
-        document.getElementById('rs-form-create').style.display = t === 'create' ? 'block' : 'none';
-        hideAlert();
+        showAuthForm(button.getAttribute('data-show-form'));
       });
     });
     document.getElementById('rs-form-login').addEventListener('submit', handleLogin);
     document.getElementById('rs-form-create').addEventListener('submit', handleCreate);
+  }
+
+  function showAuthForm(mode, keepAlert = false) {
+    const isLogin = mode === 'login';
+    document.getElementById('rs-form-login').style.display = isLogin ? 'block' : 'none';
+    document.getElementById('rs-form-create').style.display = isLogin ? 'none' : 'block';
+    document.getElementById('rs-auth-subtitle').textContent = isLogin
+      ? 'Welcome back. Sign in to your profile.'
+      : 'Create your private identity to get started.';
+    if (!keepAlert) hideAlert();
+    const firstInput = document.querySelector(isLogin ? '#rs-login-password' : '#rs-create-username');
+    if (firstInput) firstInput.focus();
+  }
+
+  function setServiceStatus(running) {
+    const dot = document.getElementById('rs-service-dot');
+    const label = document.getElementById('rs-service-label');
+    if (!dot || !label) return;
+    dot.className = 'rs-service-dot ' + (running ? 'is-running' : 'is-stopped');
+    label.textContent = running ? 'Running' : 'Unavailable';
   }
 
   async function fetchAccounts() {
@@ -278,12 +293,13 @@
     console.log(TAG, 'fetchAccounts: calling getLocations');
     try {
       const data = await rsApiCall('/rsLoginHelper/getLocations');
+      setServiceStatus(true);
       accountsList = (data && data.locations) ? data.locations.filter(Boolean) : [];
       console.log(TAG, 'fetchAccounts: found', accountsList.length, 'accounts');
       select.innerHTML = '';
       if (accountsList.length === 0) {
         select.innerHTML = '<option value="">No existing nodes found. Create a new one!</option>';
-        document.querySelector('[data-tab="create"]').click();
+        showAuthForm('create', true);
         showAlert('No existing profiles found. Please create a new profile.', 'success');
         return;
       }
@@ -295,6 +311,7 @@
       });
     } catch (e) {
       console.error(TAG, 'fetchAccounts: ❌', e.message);
+      setServiceStatus(false);
       showAlert('Connecting to RetroShare background service...', 'error');
       setTimeout(fetchAccounts, 2000);
     }
@@ -378,7 +395,7 @@
         const msg = res.retval?.errorMessage || 'Profile creation failed.';
         console.warn(TAG, 'handleCreate: ❌', msg);
         showAlert(msg, 'error');
-        setLoading(btn, false, 'Create Node Profile');
+        setLoading(btn, false, 'Create Profile');
       }
     } catch (err) {
       console.error(TAG, 'handleCreate: ❌ exception:', err.message);

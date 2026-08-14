@@ -4,18 +4,18 @@ A lightweight, native Android application for running the **RetroShare C++ P2P C
 
 ## Features
 
-- **Foreground Background Daemon (`RetroShareService`)**: Runs the native RetroShare C++ P2P core in an Android foreground service, exposing the local JSON API on `127.0.0.1:9092`.
-- **Embedded HTTP Asset Server (`LocalAssetServer`)**: Serves compiled WebUI assets on port `9090` and handles local resource routing.
-- **Embedded Web View (`WebUIActivity`)**: Fullscreen Android WebView hosting `RSNewWebUI` for seamless node management.
-- **Dashboard UI (`MainActivity`)**: Control panel for monitoring node status, starting/stopping the background service, and opening the WebUI interface internally or in an external browser.
+- **Foreground Service (`RetroShareService`)**: Runs the native RetroShare C++ P2P core, exposing the local JSON API on `127.0.0.1:9092`.
+- **Embedded HTTP Asset Server (`LocalAssetServer`)**: Serves compiled WebUI assets on `127.0.0.1:9090` and proxies RetroShare JSON API requests to the core.
+- **Embedded WebView (`WebUIActivity`)**: The app's entry point, hosting the authentication portal and `RSNewWebUI` interface.
+- **Legacy Dashboard (`MainActivity`)**: Retained as a non-launcher activity for service status and lifecycle controls, but not used in the normal app flow.
 - **WebUI Asset Sync (`sync-webui.ps1`)**: PowerShell utility script to automatically compile and synchronize `RSNewWebUI` build artifacts into the app's assets directory.
 
 ## Architecture
 
-1. **`MainActivity.kt`**: Controls service lifecycle, displays real-time connection status (`Active (127.0.0.1:9092)` / `Stopped`), and provides navigation buttons.
+1. **`WebUIActivity.kt`**: Launcher activity that starts the service and renders the authentication portal and `RSNewWebUI` in an Android `WebView`.
 2. **`RetroShareService.kt`**: Inherits from `org.retroshare.service.RetroShareServiceAndroid` (from the `libretroshare` AAR package) to manage the C++ core lifecycle, notification channel, partial wake-lock, and local asset server.
-3. **`LocalAssetServer.kt`**: Embedded NanoHTTPD server serving WebUI static assets from `app/src/main/assets/webui/`.
-4. **`WebUIActivity.kt`**: Configures Android `WebView` settings (DOM storage, JavaScript execution) to render `RSNewWebUI` with support for fallback asset loading.
+3. **`LocalAssetServer.kt`**: Lightweight `ServerSocket`-based HTTP server that serves assets from `app/src/main/assets/webui/` and proxies `/rs*` API requests to port `9092`.
+4. **`MainActivity.kt`**: Legacy dashboard for controlling the service; it is not part of the normal launcher flow.
 
 ## Project Structure
 
@@ -24,8 +24,8 @@ rsWeb/
 ├── app/
 │   ├── src/main/
 │   │   ├── java/org/retroshare/rsweb/
-│   │   │   ├── MainActivity.kt        # Main Dashboard UI & status control panel
-│   │   │   ├── WebUIActivity.kt       # Fullscreen WebView hosting RSNewWebUI
+│   │   │   ├── MainActivity.kt        # Legacy service dashboard
+│   │   │   ├── WebUIActivity.kt       # Launcher, auth portal, and embedded WebUI
 │   │   │   ├── RetroShareService.kt   # Android Foreground Service for C++ core daemon
 │   │   │   └── LocalAssetServer.kt    # Embedded HTTP server for WebUI assets & proxy
 │   │   ├── assets/
@@ -43,6 +43,13 @@ rsWeb/
 ```
 
 ## Quick Start Guide
+
+### Requirements
+
+- Android Studio with Android SDK 36
+- Java 17
+- Android 9 (API 28) or newer
+- An `arm64-v8a` device or an `x86_64` emulator
 
 ### 1. Sync WebUI Assets
 To build and synchronize the latest `RSNewWebUI` files into the Android app assets:
@@ -66,5 +73,6 @@ implementation("org.retroshare.service:libretroshare-MinApiLevel24-debug:46e3789
 3. Click **Run 'app'** (or `Shift + F10`) to deploy to an Android device or emulator.
 
 ### 4. Running the App
-- Upon launching `rsWeb`, the background foreground service initializes RetroShare's JSON API on `127.0.0.1:9092` and the local asset server on `127.0.0.1:9090`.
-- Tap **"OPEN RETROSHARE WEBUI"** to launch the embedded WebView.
+- Launching `rsWeb` opens `WebUIActivity`, requests notification permission when required, and starts the RetroShare foreground service.
+- The embedded WebView first presents the authentication portal and then loads `RSNewWebUI`.
+- The RetroShare JSON API runs on `127.0.0.1:9092`; the local asset server runs on `127.0.0.1:9090`.

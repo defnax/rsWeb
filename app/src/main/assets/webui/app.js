@@ -712,16 +712,16 @@ const config = require('config/config_resolver');
 const statusbar = require('statusbar');
 
 const navIcon = {
-  home: m('i.fas.fa-home.sidenav-icon'),
-  network: m('i.fas.fa-share-alt.sidenav-icon'),
-  people: m('i.fas.fa-users.sidenav-icon'),
-  chat: m('i.fas.fa-comments.sidenav-icon'),
-  mail: m('i.fas.fa-envelope.sidenav-icon'),
-  files: m('i.fas.fa-folder-open.sidenav-icon'),
-  channels: m('i.fas.fa-tv.sidenav-icon'),
-  forums: m('i.fas.fa-bullhorn.sidenav-icon'),
-  boards: m('i.fas.fa-globe.sidenav-icon'),
-  config: m('i.fas.fa-cogs.sidenav-icon'),
+  home: 'i.fas.fa-home.sidenav-icon',
+  network: 'i.fas.fa-share-alt.sidenav-icon',
+  people: 'i.fas.fa-users.sidenav-icon',
+  chat: 'i.fas.fa-comments.sidenav-icon',
+  mail: 'i.fas.fa-envelope.sidenav-icon',
+  files: 'i.fas.fa-folder-open.sidenav-icon',
+  channels: 'i.fas.fa-tv.sidenav-icon',
+  forums: 'i.fas.fa-bullhorn.sidenav-icon',
+  boards: 'i.fas.fa-globe.sidenav-icon',
+  config: 'i.fas.fa-cogs.sidenav-icon',
 };
 
 const navbar = () => {
@@ -763,7 +763,7 @@ const navbar = () => {
                   href: vnode.attrs.links[linkName],
                   class: (active ? 'active-link' : '') + ' item',
                 },
-                [navIcon[linkName], m('span', linkName.charAt(0).toUpperCase() + linkName.slice(1))]
+                [m(navIcon[linkName]), m('span', linkName.charAt(0).toUpperCase() + linkName.slice(1))]
               );
             }),
             m(
@@ -857,6 +857,131 @@ const navbar = () => {
   };
 };
 
+const mobileLinks = {
+  home: '/home',
+  network: '/network',
+  people: '/people/MyContacts',
+  chat: '/chat',
+  mail: '/mail/inbox',
+};
+
+const mobileMoreLinks = {
+  files: '/files/files',
+  channels: '/channels/MyChannels',
+  forums: '/forums/MyForums',
+  boards: '/boards/MyBoards',
+  config: '/config/network',
+};
+
+const MobileStatus = () => {
+  let isOpen = false;
+  return {
+    view: () => {
+      const state = statusbar.State;
+      const summary = statusbar.getMobileStatusSummary();
+      const isHiddenMode = state.hiddenType === 2 || state.hiddenType === 4;
+      return [
+        m('.mobile-app-header', [
+          m('.mobile-app-header__brand', [
+            m('img', { src: 'images/retroshare.svg', alt: '' }),
+            m('strong', 'RetroShare'),
+          ]),
+          m('button.mobile-status-trigger[type=button]', {
+            'aria-label': `Open connection status. ${summary.label}`,
+            'aria-expanded': String(isOpen),
+            onclick: () => (isOpen = true),
+          }, [
+            m('span.mobile-status-trigger__dot', { style: { backgroundColor: summary.color } }),
+            m('span', `${state.onlineCount}/${state.friendCount}`),
+            m('i.fas.fa-chevron-up'),
+          ]),
+        ]),
+        isOpen && m('.mobile-status-overlay', {
+          onclick: (event) => {
+            if (event.target === event.currentTarget) isOpen = false;
+          },
+        }, m('.mobile-status-sheet', [
+          m('.mobile-status-sheet__handle'),
+          m('.mobile-status-sheet__heading', [
+            m('div', [
+              m('span.mobile-status-trigger__dot', { style: { backgroundColor: summary.color } }),
+              m('strong', summary.label),
+            ]),
+            m('button[type=button][aria-label=Close status]', {
+              onclick: () => (isOpen = false),
+            }, m('i.fas.fa-times')),
+          ]),
+          m('.mobile-status-sheet__grid', [
+            m('.mobile-status-sheet__item', [m('span', 'Friends online'), m('strong', `${state.onlineCount}/${state.friendCount}`)]),
+            isHiddenMode
+              ? m('.mobile-status-sheet__item', [
+                  m('span', state.hiddenType === 2 ? 'Tor' : 'I2P'),
+                  m('strong', state.torChecking ? 'Checking' : state.torProxyOk ? 'Ready' : 'Unavailable'),
+                ])
+              : [
+                  m('.mobile-status-sheet__item', [m('span', 'NAT'), m('strong', summary.label)]),
+                  m('.mobile-status-sheet__item', [m('span', 'DHT'), m('strong', state.dhtActive ? state.dhtOk ? 'Connected' : 'Searching' : 'Disabled')]),
+                ],
+            m('.mobile-status-sheet__item', [
+              m('span', [m('i.fas.fa-arrow-down'), ' Download']),
+              m('strong', `${state.rateIn.toFixed(1)} kB/s`),
+              m('small', statusbar.formatBytes(state.totalIn)),
+            ]),
+            m('.mobile-status-sheet__item', [
+              m('span', [m('i.fas.fa-arrow-up'), ' Upload']),
+              m('strong', `${state.rateOut.toFixed(1)} kB/s`),
+              m('small', statusbar.formatBytes(state.totalOut)),
+            ]),
+          ]),
+          m('.mobile-status-sheet__version', 'WebUI v139'),
+        ])),
+      ];
+    },
+  };
+};
+
+const MobileNavigation = () => {
+  let isMoreOpen = false;
+  const routeName = () => m.route.get().split('/')[1];
+  const link = (name, href) => m(m.route.Link, {
+    href,
+    class: `mobile-bottom-nav__item${routeName() === name ? ' active' : ''}`,
+    onclick: () => (isMoreOpen = false),
+  }, [m(navIcon[name]), m('span', name.charAt(0).toUpperCase() + name.slice(1))]);
+
+  return {
+    view: () => [
+      isMoreOpen && m('.mobile-more-overlay', {
+        onclick: (event) => {
+          if (event.target === event.currentTarget) isMoreOpen = false;
+        },
+      }, m('.mobile-more-sheet', [
+        m('.mobile-more-sheet__handle'),
+        m('h3', 'More'),
+        m('.mobile-more-sheet__links', Object.entries(mobileMoreLinks).map(([name, href]) =>
+          m(m.route.Link, {
+            href,
+            class: routeName() === name ? 'active' : '',
+            onclick: () => (isMoreOpen = false),
+          }, [m(navIcon[name]), m('span', name.charAt(0).toUpperCase() + name.slice(1))])
+        )),
+        m('.mobile-more-sheet__actions', [
+          m('button[type=button]', { onclick: () => window.location.reload(true) }, [m('i.fas.fa-sync-alt'), ' Reload']),
+          m('button[type=button]', { onclick: () => rs.logout() }, [m('i.fas.fa-sign-out-alt'), ' Logout']),
+        ]),
+      ])),
+      m('nav.mobile-bottom-nav[aria-label=Main navigation]', [
+        Object.entries(mobileLinks).map(([name, href]) => link(name, href)),
+        m('button.mobile-bottom-nav__item[type=button]', {
+          class: isMoreOpen || Object.keys(mobileMoreLinks).includes(routeName()) ? 'active' : '',
+          'aria-expanded': String(isMoreOpen),
+          onclick: () => (isMoreOpen = !isMoreOpen),
+        }, [m('i.fas.fa-bars.sidenav-icon'), m('span', 'More')]),
+      ]),
+    ],
+  };
+};
+
 const Layout = () => {
   return {
     view: (vnode) =>
@@ -887,8 +1012,10 @@ const Layout = () => {
             },
           },
           [
+            m(MobileStatus),
             m('.tab-content', { style: { flex: '1', overflow: 'auto' } }, vnode.children),
             m(statusbar),
+            m(MobileNavigation),
           ]
         ),
       ]),
@@ -3476,6 +3603,28 @@ function formatBytes(rawBytes) {
   return parseFloat((bytes / Math.pow(k, safeI)).toFixed(1)) + ' ' + sizes[safeI];
 }
 
+function getMobileStatusSummary() {
+  if (!rs.connectionState.status) {
+    return { color: '#ef4444', label: 'Disconnected from RetroShare Core' };
+  }
+  const isHiddenMode = State.hiddenType === RS_HIDDEN_TYPE_TOR ||
+    State.hiddenType === RS_HIDDEN_TYPE_I2P;
+  if (isHiddenMode) {
+    if (State.torChecking) return { color: '#eab308', label: 'Checking hidden service' };
+    if (State.torProxyOk === false) return { color: '#ef4444', label: 'Hidden service unavailable' };
+    return {
+      color: State.torProxyOk ? '#22c55e' : '#eab308',
+      label: `${State.hiddenType === RS_HIDDEN_TYPE_TOR ? 'Tor' : 'I2P'} connection`,
+    };
+  }
+  if (State.natState === 8 || State.natState === 9) {
+    return { color: '#22c55e', label: State.natState === 9 ? 'Forwarded port' : 'Connected' };
+  }
+  if ([3, 4].includes(State.natState)) return { color: '#ef4444', label: 'Network problem' };
+  if (State.natState === 2) return { color: '#94a3b8', label: 'Offline' };
+  return { color: '#eab308', label: State.natState === 6 ? 'Behind firewall' : 'Limited connection' };
+}
+
 /**
  * Fetch the own peer's hidden type and proxy status using /rsTor API.
  * Mirrors Qt's TorStatus::getTorStatus().
@@ -3831,6 +3980,9 @@ const StatusBar = {
 };
 
 module.exports = StatusBar;
+StatusBar.State = State;
+StatusBar.formatBytes = formatBytes;
+StatusBar.getMobileStatusSummary = getMobileStatusSummary;
  
 }); 
 require.register("widgets", function(exports, require, module) { 

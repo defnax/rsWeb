@@ -967,7 +967,7 @@ const MobileNavigation = () => {
         )),
         m('.mobile-more-sheet__actions', [
           m('button[type=button]', { onclick: () => window.location.reload(true) }, [m('i.fas.fa-sync-alt'), ' Reload']),
-          m('button[type=button]', { onclick: () => rs.logout() }, [m('i.fas.fa-sign-out-alt'), ' Logout']),
+          m('button.logout-link[type=button]', { onclick: () => rs.logout() }, [m('i.fas.fa-sign-out-alt'), ' Logout']),
         ]),
       ])),
       m('nav.mobile-bottom-nav[aria-label=Main navigation]', [

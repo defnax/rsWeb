@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -70,6 +72,15 @@ class RetroShareService : RsService() {
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to stop service", e)
             }
+        }
+
+        fun restart(ctx: Context) {
+            val appContext = ctx.applicationContext
+            rsInitialized = false
+            appContext.stopService(Intent(appContext, RetroShareService::class.java))
+            Handler(Looper.getMainLooper()).postDelayed({
+                start(appContext)
+            }, 750)
         }
     }
 
@@ -145,6 +156,8 @@ class RetroShareService : RsService() {
 
     override fun onDestroy() {
         rsInitialized = false
+        assetServer?.stop()
+        assetServer = null
         super.onDestroy()
     }
 

@@ -12,6 +12,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.JavascriptInterface
 import android.widget.ProgressBar
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -28,6 +29,7 @@ class WebUIActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
+    private var lastServiceRestartAt = 0L
 
     companion object {
         const val WEBUI_LOCAL_URL = "http://127.0.0.1:9092/index.html"
@@ -83,6 +85,20 @@ class WebUIActivity : AppCompatActivity() {
         settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         settings.useWideViewPort = false
         settings.loadWithOverviewMode = false
+        webView.addJavascriptInterface(ServiceBridge(), "RSWebAndroid")
+    }
+
+    private inner class ServiceBridge {
+        @JavascriptInterface
+        fun restartRetroShareService() {
+            runOnUiThread {
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - lastServiceRestartAt < 10_000L) return@runOnUiThread
+                lastServiceRestartAt = now
+                android.util.Log.i("WebUIActivity", "WebUI requested RetroShare service restart")
+                RetroShareService.restart(this@WebUIActivity)
+            }
+        }
     }
 
     private fun setupWebViewClient() {

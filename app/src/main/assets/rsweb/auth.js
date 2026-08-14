@@ -12,6 +12,7 @@
     ? 'http://127.0.0.1:9092'
     : window.location.origin;
   let accountsList = [];
+  let serviceFailureCount = 0;
 
   console.log(TAG, '=== auth.js START ===');
   console.log(TAG, 'protocol:', window.location.protocol, '| API_BASE:', API_BASE);
@@ -293,6 +294,7 @@
     console.log(TAG, 'fetchAccounts: calling getLocations');
     try {
       const data = await rsApiCall('/rsLoginHelper/getLocations');
+      serviceFailureCount = 0;
       setServiceStatus(true);
       accountsList = (data && data.locations) ? data.locations.filter(Boolean) : [];
       console.log(TAG, 'fetchAccounts: found', accountsList.length, 'accounts');
@@ -311,8 +313,16 @@
       });
     } catch (e) {
       console.error(TAG, 'fetchAccounts: ❌', e.message);
+      serviceFailureCount += 1;
       setServiceStatus(false);
-      showAlert('Connecting to RetroShare background service...', 'error');
+      if (serviceFailureCount === 3 && window.RSWebAndroid &&
+          typeof window.RSWebAndroid.restartRetroShareService === 'function') {
+        console.warn(TAG, 'fetchAccounts: requesting Android service restart');
+        showAlert('Restarting RetroShare background service...', 'error');
+        window.RSWebAndroid.restartRetroShareService();
+      } else {
+        showAlert('Connecting to RetroShare background service...', 'error');
+      }
       setTimeout(fetchAccounts, 2000);
     }
   }

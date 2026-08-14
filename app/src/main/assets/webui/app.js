@@ -222,23 +222,12 @@ const retroshareId = () => {
 };
 
 function invalidCertPrompt() {
-  widget.popupMessage([m('h3', 'Error'), m('hr'), m('p', 'Not a valid Retroshare certificate.')]);
+  widget.popupMessage([m('h3', 'Invalid RetroShare ID'), m('hr'), m('p', 'Check the ID and try again.')]);
 }
 
 function confirmAddPrompt(details, cert, long) {
-  widget.popupMessage([
-    m('i.fas.fa-user-plus'),
-    m('h3', 'Make friend'),
-    m('p', 'Details about your friend'),
-    m('hr'),
-    m('ul', [
-      m('li', 'Name: ' + details.name),
-      m('li', 'Location: ' + details.location + '(' + details.id + ')'),
-      m('li', details.isHiddenNode ? details.hiddenNodeAddress : details.extAddr),
-    ]),
-
-    long
-      ? m(
+  const finishButton = long
+    ? m(
         'button',
         {
           onclick: async () => {
@@ -260,7 +249,7 @@ function confirmAddPrompt(details, cert, long) {
         },
         'Finish'
       )
-      : m(
+    : m(
         'button',
         {
           onclick: async () => {
@@ -284,16 +273,47 @@ function confirmAddPrompt(details, cert, long) {
           },
         },
         'Finish'
-      ),
-  ]);
+      );
+
+  widget.popupMessage(
+    m('.friend-confirmation', [
+      m('.friend-confirmation__heading', [
+        m('i.fas.fa-user-plus'),
+        m('div', [m('h3', 'Make friend'), m('p', 'Confirm this is the person you want to add.')]),
+      ]),
+      m('.friend-confirmation__details', [
+        m('.friend-confirmation__row', [
+          m('span.friend-confirmation__label', 'Name'),
+          m('strong', details.name || 'Unknown'),
+        ]),
+        m('.friend-confirmation__row', [
+          m('span.friend-confirmation__label', 'Location'),
+          m('span', details.location || 'Unknown'),
+        ]),
+        m('.friend-confirmation__row', [
+          m('span.friend-confirmation__label', 'Peer ID'),
+          m('code', details.id || 'Unknown'),
+        ]),
+        m('.friend-confirmation__row', [
+          m('span.friend-confirmation__label', details.isHiddenNode ? 'Hidden address' : 'Address'),
+          m('span', (details.isHiddenNode ? details.hiddenNodeAddress : details.extAddr) || 'Unknown'),
+        ]),
+      ]),
+      m('.friend-confirmation__actions', finishButton),
+    ]),
+    'friend-confirmation-modal'
+  );
 }
 
 async function addFriendFromCert(cert) {
-  const res = await rs.rsJsonApiRequest('/rsPeers/parseShortInvite', { invite: cert });
+  const retroshareId = rs.cleanRetroshareId(cert);
+  if (!retroshareId) return;
+
+  const res = await rs.rsJsonApiRequest('/rsPeers/parseShortInvite', { invite: retroshareId });
 
   if (res.body.retval) {
     // console.log(res.body);
-    confirmAddPrompt(res.body.details, cert, false);
+    confirmAddPrompt(res.body.details, retroshareId, false);
   } else {
     rs.rsJsonApiRequest('/rsPeers/loadDetailsFromStringCert', { cert }, (data) => {
       if (!data.retval) {
@@ -307,16 +327,16 @@ async function addFriendFromCert(cert) {
 
 const AddFriend = () => {
   let certificate = '';
+  let fileName = '';
 
   function loadFileContents(fileListObj) {
-    const file = fileListObj[0];
-    if (file.type.indexOf('text') !== 0 || file.size === 0) {
-      // TODO handle incorrect file
-      return null;
-    }
+    const file = fileListObj && fileListObj[0];
+    if (!file || file.size === 0) return;
+
     const reader = new FileReader();
     reader.onload = (e) => {
       certificate = e.target.result;
+      fileName = file.name;
       m.redraw();
     };
     reader.readAsText(file);
@@ -324,19 +344,23 @@ const AddFriend = () => {
 
   return {
     view: (vnode) =>
-      m('.widget', [
-        m('h3', 'Add friend'),
-        m('h5', 'Did you recieve a certificate from a friend?'),
-        m('hr'),
+      m('.widget.add-friend-wizard', [
+        m('.add-friend-wizard__heading', [
+          m('i.fas.fa-user-plus'),
+          m('div', [
+            m('h3', 'Add friend'),
+            m('p', 'Paste your friend\'s RetroShare ID to connect.'),
+          ]),
+        ]),
         m(
           '.cert-drop-zone',
           {
             isDragged: false,
             ondragenter: () => (vnode.state.isDragged = true),
-            ondragexit: () => (vnode.state.isDragged = false),
+            ondragleave: () => (vnode.state.isDragged = false),
 
             // Styling element when file is dragged
-            style: { border: vnode.state.isDragged && '5px solid #3ba4d7' },
+            class: vnode.state.isDragged ? 'cert-drop-zone--active' : '',
 
             ondragover: (e) => e.preventDefault(),
             ondrop: (e) => {
@@ -347,31 +371,35 @@ const AddFriend = () => {
           },
 
           [
+            m('label[for=friend-retroshare-id]', 'Friend\'s RetroShare ID'),
             m(
-              'p[style="margin: 16px 0 4px"]',
-              'You can directly upload or Drag and drop the file below'
-            ),
-            m('input[type=file][name=certificate]', {
-              onchange: (e) => {
-                // Note: this one is for the 'browse' button
-                loadFileContents(e.target.files || e.dataTransfer.files);
-              },
-            }),
-            m('p[style="width: 100%; text-align: center; margin: 5px 0;"]', 'OR'),
-            m(
-              'textarea[rows=5][placeholder="Paste the certificate here"][style="width: 100%; display: block; resize: vertical;"]',
+              'textarea#friend-retroshare-id[rows=6][placeholder="Paste the RetroShare ID here"]',
               {
-                oninput: (e) => (certificate = e.target.value),
+                oninput: (e) => {
+                  certificate = e.target.value;
+                  fileName = '';
+                },
                 value: certificate,
               }
             ),
-            m(
-              'button[style="margin-top: 10px;"]',
-              {
-                onclick: () => addFriendFromCert(certificate),
-              },
-              'Add'
-            ),
+            m('.add-friend-wizard__divider', [m('span', 'or')]),
+            m('.add-friend-wizard__file', [
+              m('label.button[for=friend-id-file]', [m('i.fas.fa-folder-open'), ' Choose ID file']),
+              m('input#friend-id-file[type=file][name=certificate][accept="text/*,.rsc,.txt"]', {
+                onchange: (e) => loadFileContents(e.target.files),
+              }),
+              m('span', fileName || 'You can also drop a text file here.'),
+            ]),
+            m('.add-friend-wizard__actions', [
+              m(
+                'button',
+                {
+                  disabled: !certificate.trim(),
+                  onclick: () => addFriendFromCert(certificate),
+                },
+                [m('i.fas.fa-user-plus'), ' Add friend']
+              ),
+            ]),
           ]
         ),
       ]),
@@ -415,7 +443,7 @@ const Certificate = () => {
                 'button',
                 {
                   onclick: () => {
-                    widget.popupMessage(m(AddFriend));
+                    widget.popupMessage(m(AddFriend), 'add-friend-modal');
                   },
                 },
                 'Add Friend'
@@ -575,13 +603,18 @@ function loginComponent() {
   const urlParams = new URLSearchParams(window.location.search);
   let uname = urlParams.get('Username') || 'webui';
   let passwd = urlParams.get('Password') || '';
+  //  Parenthesised on purpose: === binds tighter than ||, so without them the
+  //  test read `(Url || protocol === 'file:') ? default : origin`, and any
+  //  ?Url= given was thrown away in favour of the hardcoded default -- the one
+  //  case the parameter exists for.
   let url =
-    urlParams.get('Url') || window.location.protocol === 'file:'
+    urlParams.get('Url') ||
+    (window.location.protocol === 'file:'
       ? 'http://127.0.0.1:9092'
       : window.location.protocol +
       '//' +
       window.location.host +
-      window.location.pathname.replace('/index.html', '');
+      window.location.pathname.replace('/index.html', ''));
   let withOptions = false;
 
   const logo = () =>
@@ -778,7 +811,7 @@ const navbar = () => {
                       ? 'Connected to RetroShare Core'
                       : 'Connection Lost',
                   }),
-                  m('span.webui-version', { style: { fontSize: '0.7em' } }, 'v131'),
+                  m('span.webui-version', { style: { fontSize: '0.7em' } }, 'v139'),
                   m('i.fas.fa-sync-alt.refresh-icon', {
                     style: { cursor: 'pointer', fontSize: '0.8em' },
                     onclick: () => window.location.reload(true),
@@ -2940,6 +2973,10 @@ function logout() {
 
 const connectionState = {
   status: true,
+  //  Status of the last HTTP response, or 0 when the request never reached the
+  //  core. Recorded in extract() so it stays available when the body fails to
+  //  parse, which is how a truncated response shows up.
+  lastHttpStatus: 0,
 };
 
 function rsJsonApiRequest(
@@ -2967,6 +3004,7 @@ function rsJsonApiRequest(
       url: loginKey.url + path,
       async,
       extract: (xhr) => {
+        connectionState.lastHttpStatus = xhr.status;
         // Empty string is not valid json and fails on parse
         const response = xhr.responseText || '""';
         return {
@@ -2990,7 +3028,12 @@ function rsJsonApiRequest(
           console.error('[RS] Error in success callback for path:', path, e);
         }
       } else {
-        connectionState.status = false;
+        //  An answer, whatever its code, proves the core is there. A 404 on an
+        //  endpoint this build does not expose, or a 401 on a stale password,
+        //  is not a lost connection: only status 0, i.e. no HTTP response at
+        //  all, is. Flipping the flag on every error made the status LED blink
+        //  red on each optional endpoint that is probed.
+        connectionState.status = result.status !== 0;
         if (result.status === 401 || result.status === 403) {
           setKeys(loginKey.username, loginKey.passwd, loginKey.url, false);
           m.route.set('/');
@@ -3008,13 +3051,23 @@ function rsJsonApiRequest(
       return result;
     })
     .catch(function (e) {
-      connectionState.status = false;
+      //  Reaching here after a valid 200 means the body could not be parsed,
+      //  i.e. the response was cut short. The core answered and is still there;
+      //  it is the answer that did not survive the trip.
+      connectionState.status = connectionState.lastHttpStatus === 200;
       try {
         callback(e, false);
       } catch (cbErr) {
         // console.error('[RS] Error in catch callback for path:', path, cbErr);
       }
       console.error('[RS] Error: While sending request for path:', path, '\ninfo:', e);
+      //  Resolve to the same shape as a real answer, with an empty body. Most
+      //  call sites go straight for res.body.retval, and resolving undefined
+      //  turned every failed request into a TypeError thrown inside an onclick,
+      //  where nothing catches it: the button silently does nothing. Every
+      //  defensive check in the code base tests res.body.retval or res.body, so
+      //  an empty body still reads as a failure to all of them.
+      return { status: connectionState.lastHttpStatus, statusText: 'request failed', body: {} };
     });
 }
 
@@ -3324,6 +3377,24 @@ function hexId(id) {
   return String(id);
 }
 
+//  A RetroShare ID can be pasted bare, or inside a retroshare://... link where
+//  it sits url-encoded behind rsInvite=. Both the Add friend wizard and the
+//  location details dialog had their own copy of this; they now share one, the
+//  variant that trims after decoding, since a pasted link often carries a
+//  trailing newline.
+function cleanRetroshareId(value) {
+  const input = String(value || '').trim();
+  const marker = 'rsInvite=';
+  const markerPosition = input.indexOf(marker);
+  const id = markerPosition >= 0 ? input.slice(markerPosition + marker.length) : input;
+
+  try {
+    return decodeURIComponent(id).trim();
+  } catch (_) {
+    return id.trim();
+  }
+}
+
 module.exports = {
   rsJsonApiRequest,
   idToHex: hexId,
@@ -3337,6 +3408,7 @@ module.exports = {
   loginKey,
   formatBytes,
   logout,
+  cleanRetroshareId,
 };
  
 }); 
@@ -3842,22 +3914,44 @@ const SidebarQuickView = () => {
 // There are ways of doing this inside m.route but it is probably
 // cleaner and faster when kept outside of the main auto
 // rendering system
-function popupMessage(message) {
+function popupMessage(message, modalClass = '') {
   const container = document.getElementById('modal-container');
   container.style.display = 'block';
-  m.render(
-    container,
-    m('.modal-content', [
+  //  A vnode carries the DOM node it owns, so the same one cannot be rendered
+  //  twice. popupMessage is handed a ready made vnode and mounts it, which
+  //  re-renders it on every global redraw, so it has to hand out a fresh copy
+  //  each time -- and a copy all the way down. Cloning only the root leaves the
+  //  children array shared, and `old === vnodes` makes mithril skip the whole
+  //  subtree: the modal content is then frozen at its first render.
+  const freshVnode = (vnode) => {
+    if (Array.isArray(vnode)) return vnode.map(freshVnode);
+    if (!vnode || typeof vnode !== 'object' || !vnode.tag) return vnode;
+    //  '<' is m.trust and '[' is m.fragment: neither is a selector m() knows how
+    //  to parse. Rebuilding them with m() would silently turn trusted html into
+    //  an empty div, so they go back through their own factory. '#' is a text
+    //  vnode, whose children is the string itself.
+    if (vnode.tag === '<') return m.trust(vnode.children);
+    if (vnode.tag === '#') return vnode.children;
+    if (vnode.tag === '[') return m.fragment(vnode.attrs, freshVnode(vnode.children));
+    return m(vnode.tag, vnode.attrs, freshVnode(vnode.children));
+  };
+  const Popup = {
+    view: () => m(`.modal-content${modalClass ? `.${modalClass}` : ''}`, [
       m(
         'button.red.close-btn',
         {
-          onclick: () => (container.style.display = 'none'),
+          onclick: () => {
+            m.mount(container, null);
+            container.style.display = 'none';
+          },
         },
         m('i.fas.fa-times')
       ),
-      message,
-    ])
-  );
+      freshVnode(message),
+    ]),
+  };
+
+  m.mount(container, Popup);
 }
 
 module.exports = {
@@ -3942,7 +4036,9 @@ const Layout = () => {
                 util.popupmessage(
                   m(viewUtil.createboard, {
                     authorId: ownId,
-                  })
+                    onCreated: getBoards.load,
+                  }),
+                  'create-board-modal'
                 ),
             },
             'Create Board'
@@ -3984,6 +4080,8 @@ module.exports = {
 require.register("boards/boards_util", function(exports, require, module) { 
 const m = require('mithril');
 const rs = require('rswebui');
+const peopleUtil = require('people/people_util');
+const widget = require('widgets');
 
 const GROUP_SUBSCRIBE_ADMIN = 0x01; // means: you have the admin key for this group
 const GROUP_SUBSCRIBE_PUBLISH = 0x02; // means: you have the publish key for thiss group. Typical use: publish key in channels are shared with specific friends.
@@ -4024,12 +4122,18 @@ function plainText(value) {
     .trim();
 }
 
+const BOARD_POST_BATCH_SIZE = 25;
+
 async function updateContent(content, boardid) {
-  const msgId = content.mMsgId || content.msgId || content;
+  const requested = Array.isArray(content) ? content : [content];
+  const msgIds = requested
+    .map((item) => item.mMsgId || item.msgId || item)
+    .filter(Boolean);
+  if (msgIds.length === 0) return false;
   try {
     const res = await rs.rsJsonApiRequest('/rsPosted/getBoardContent', {
       boardId: boardid,
-      contentsIds: [msgId],
+      contentsIds: msgIds,
     });
     if (res && res.body && res.body.retval) {
       const posts = res.body.posts || res.body.postList || [];
@@ -4038,14 +4142,17 @@ async function updateContent(content, boardid) {
 
       if (posts.length > 0) {
         if (!Data.Posts[boardid]) Data.Posts[boardid] = {};
-        Data.Posts[boardid][msgId] = { post: posts[0], isSearched: true };
+        posts.forEach((post) => {
+          const msgId = post.mMeta && post.mMeta.mMsgId;
+          if (msgId) Data.Posts[boardid][msgId] = { post, isSearched: true };
+        });
         m.redraw();
-      } else if (comments.length > 0) {
-        const threadId = content.mThreadId || comments[0].mMeta.mThreadId;
+      } else if (comments.length > 0 && requested.length === 1) {
+        const threadId = requested[0].mThreadId || comments[0].mMeta.mThreadId;
         if (Data.Comments[threadId] === undefined) {
           Data.Comments[threadId] = {};
         }
-        Data.Comments[threadId][msgId] = comments[0];
+        Data.Comments[threadId][msgIds[0]] = comments[0];
         m.redraw();
       } else if (votes.length > 0) {
         const vote = votes[0];
@@ -4062,10 +4169,31 @@ async function updateContent(content, boardid) {
           m.redraw();
         }
       }
+      return true;
     }
   } catch (err) {
     console.warn('updateContent error:', err);
   }
+  return false;
+}
+
+// Same as the channel loader: a post can carry base64 media, and the JSON API
+// cuts a response it cannot flush in time. Retry a failed batch as two smaller
+// ones until the offending post is isolated, instead of dropping the 25 of them
+// on a single console.warn. Do not split when the core stopped answering, or
+// one batch would turn into 2N-1 doomed requests.
+async function updateContentBatch(contentIds, boardid) {
+  const loaded = await updateContent(contentIds, boardid);
+  if (loaded || contentIds.length <= 1 || !rs.connectionState.status) {
+    if (!loaded) {
+      console.warn('Unable to load board content item', contentIds[0]);
+    }
+    return;
+  }
+
+  const middle = Math.ceil(contentIds.length / 2);
+  await updateContentBatch(contentIds.slice(0, middle), boardid);
+  await updateContentBatch(contentIds.slice(middle), boardid);
 }
 
 const inFlightBoards = {};
@@ -4099,6 +4227,7 @@ async function updateDisplayBoards(keyid, details) {
             description: details.mDescription,
             image: details.mGroupImage,
             author: details.mMeta.mAuthorId,
+            subscribeFlags: details.mMeta.mSubscribeFlags,
             isSubscribed:
               details.mMeta.mSubscribeFlags === GROUP_SUBSCRIBE_SUBSCRIBED ||
               details.mMeta.mSubscribeFlags === GROUP_MY_BOARD,
@@ -4115,24 +4244,37 @@ async function updateDisplayBoards(keyid, details) {
         Data.Posts[keyid] = {};
       }
 
-      // Fetch all board content via /rsPosted/getBoardAllContent
-      const resAll = await rs.rsJsonApiRequest('/rsPosted/getBoardAllContent', {
+      // Load lightweight post metadata first, then fetch complete posts newest
+      // first in page-sized batches. The first page can render without waiting
+      // for every image and older post in a large board.
+      const summariesRes = await rs.rsJsonApiRequest('/rsPosted/getBoardPostSummaries', {
         boardId: keyid,
-        groupId: keyid,
-        handle: keyid,
       });
+      const summaries = summariesRes && summariesRes.body && summariesRes.body.retval
+        && Array.isArray(summariesRes.body.summaries)
+        ? summariesRes.body.summaries
+        : null;
 
-      if (resAll && resAll.body && resAll.body.retval) {
-        const posts = resAll.body.posts || resAll.body.postList || [];
-        if (posts.length > 0) {
-          posts.forEach((post) => {
-            const msgId = (post.mMeta && post.mMeta.mMsgId) ? post.mMeta.mMsgId : post.mMsgId;
-            if (msgId) {
-              Data.Posts[keyid][msgId] = { post, isSearched: true };
-            }
-          });
-          m.redraw();
+      if (summaries) {
+        summaries.sort((a, b) => Number((b.mPublishTs && b.mPublishTs.xint64) || b.mPublishTs || 0)
+          - Number((a.mPublishTs && a.mPublishTs.xint64) || a.mPublishTs || 0));
+        for (let i = 0; i < summaries.length; i += BOARD_POST_BATCH_SIZE) {
+          await updateContentBatch(summaries.slice(i, i + BOARD_POST_BATCH_SIZE), keyid);
         }
+      } else {
+        // Compatibility fallback for RetroShare cores which do not yet expose
+        // getBoardPostSummaries.
+        const resAll = await rs.rsJsonApiRequest('/rsPosted/getBoardAllContent', {
+          boardId: keyid,
+        });
+        const posts = resAll && resAll.body && resAll.body.retval
+          ? (resAll.body.posts || resAll.body.postList || [])
+          : [];
+        posts.forEach((post) => {
+          const msgId = (post.mMeta && post.mMeta.mMsgId) || post.mMsgId;
+          if (msgId) Data.Posts[keyid][msgId] = { post, isSearched: true };
+        });
+        m.redraw();
       }
     } catch (err) {
       console.warn('updateDisplayBoards network error for board:', keyid, err);
@@ -4149,12 +4291,6 @@ const BoardSummary = () => {
     view: (vnode) => {
       const details = vnode.attrs.details;
       const bname = details.mGroupName || details.name || '';
-      const bsubscribed =
-        details.mSubscribeFlags === GROUP_SUBSCRIBE_SUBSCRIBED ||
-        details.mSubscribeFlags === GROUP_MY_BOARD;
-      const bposts = details.mVisibleMsgCount || details.posts || 0;
-      const createDate = details.mPublishTs || details.created;
-      const lastActivity = details.mLastPost || details.activity;
 
       return m(
         'tr',
@@ -4211,31 +4347,17 @@ const SearchBar = () => {
   };
 };
 
-function popupmessage(message) {
-  const container = document.getElementById('modal-container');
-  if (!container) return;
-  container.style.display = 'block';
-  m.render(
-    container,
-    m('.modal-content', [
-      m(
-        'button.red',
-        {
-          onclick: () => (container.style.display = 'none'),
-        },
-        m('i.fas.fa-times')
-      ),
-      message,
-    ])
-  );
+function popupmessage(message, modalClass = '') {
+  widget.popupMessage(message, modalClass);
 }
 
 async function voteForPost(postGrpId, postMsgId, voteType, voterId = null) {
   try {
     let authorId = voterId;
     if (!authorId) {
-      const resId = await rs.rsJsonApiRequest('/rsIdentity/getOwnIds', {});
-      const ownIds = (resId && resId.body && resId.body.ids) ? resId.body.ids : [];
+      //  Goes through people_util so the endpoints and their caching stay in
+      //  one place: /rsIdentity/getOwnIds is deprecated and answers 404.
+      const ownIds = await peopleUtil.ownIds();
       if (ownIds.length === 0) {
         alert('No identity found to vote.');
         return false;
@@ -5017,73 +5139,118 @@ function createboard() {
   let title;
   let body;
   let identity;
-  let circle;
+  let thumbnail;
+  let thumbnailPreview = '';
+  let thumbnailFileName = '';
+  let circle = util.PUBLIC;
+  let circles = [];
+  let selectedCircle;
   return {
-    oninit: (vnode) => {
+    oninit: async (vnode) => {
       if (vnode.attrs.authorId) {
         identity = vnode.attrs.authorId[0];
-        circle = util.PUBLIC;
+      }
+      const res = await rs.rsJsonApiRequest('/rsgxscircles/getCirclesSummaries');
+      if (res.body.retval) {
+        circles = res.body.circles || [];
+        selectedCircle = circles[0];
       }
     },
     view: (vnode) =>
-      m('.widget', [
-        m('h3', 'Create Board'),
-        m('hr'),
-        m('input[type=text][placeholder=Title]', {
+      m('.widget.create-board-form', [
+        m('.create-board-form__heading', [
+          m('h3', 'Create Board'),
+          m('p', 'Set up the board appearance and publishing options.'),
+        ]),
+        m('input.create-board-form__title[type=text][placeholder=Board title]', {
           oninput: (e) => (title = e.target.value),
         }),
-        m('label[for=idtags]', 'Select identity'),
-        m(
-          'select[id=idtags]',
-          {
-            value: identity,
+        m('.create-board-form__visual', [
+          m('.board-thumbnail-preview', [
+            thumbnailPreview
+              ? m('img', { src: thumbnailPreview, alt: 'Board thumbnail preview' })
+              : m('.board-thumbnail-preview__placeholder', [
+                m('i.fas.fa-image'),
+                m('span', 'Board logo'),
+                m('small', 'No image selected'),
+              ]),
+          ]),
+          m('span.create-board-form__visual-label', 'Thumbnail'),
+          m('input.create-board-form__file-input[type=file][id=board-thumbnail][accept=image/*]', {
             onchange: (e) => {
-              identity = vnode.attrs.authorId[e.target.selectedIndex];
+              const file = e.target.files[0];
+              if (!file) {
+                thumbnail = undefined;
+                thumbnailPreview = '';
+                thumbnailFileName = '';
+                return;
+              }
+              thumbnailFileName = file.name;
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                thumbnailPreview = reader.result;
+                thumbnail = thumbnailPreview.substring(thumbnailPreview.indexOf(',') + 1);
+                m.redraw();
+              };
+              reader.readAsDataURL(file);
             },
-          },
-          [
-            vnode.attrs.authorId &&
-              vnode.attrs.authorId.map((o) =>
-                m(
-                  'option',
-                  { value: o },
-                  rs.userList.username(o)
-                    ? rs.userList.username(o) + ' (' + o.slice(0, 8) + '...)'
-                    : 'No Signature'
-                )
-              ),
-          ]
-        ),
-
-        m('textarea[rows=5][placeholder=Description]', {
-          style: { width: '90%', display: 'block' },
+          }),
+          m('label.create-board-form__file-button[for=board-thumbnail]', {
+            title: thumbnailFileName || 'Choose a board thumbnail',
+          }, [m('i.fas.fa-upload'), thumbnailPreview ? ' Change image' : ' Choose image']),
+          m('small', 'Square images work best.'),
+        ]),
+        m('.create-board-form__field.create-board-form__identity', [
+          m('label[for=idtags]', 'Publishing identity'),
+          m('select.config-style-select[id=idtags]', {
+            value: identity,
+            onchange: (e) => (identity = vnode.attrs.authorId[e.target.selectedIndex]),
+          }, vnode.attrs.authorId && vnode.attrs.authorId.map((o) => m(
+            'option',
+            { value: o },
+            Number(o) === 0 ? 'No Signature' : `${rs.userList.username(o)} (${o.slice(0, 8)}...)`
+          ))),
+        ]),
+        m('.create-board-form__field.create-board-form__distribution', [
+          m('label[for=circletags]', 'Message distribution'),
+          m('select.config-style-select[id=circletags]', {
+            value: circle,
+            onchange: (e) => (circle = e.target.value),
+          }, [
+            m('option', { value: util.PUBLIC }, '🌐  Public'),
+            m('option', { value: util.EXTERNAL }, '◉  Restricted to External Circle'),
+          ]),
+        ]),
+        Number(circle) === util.EXTERNAL && m('.create-board-form__field.create-board-form__circle', [
+          m('label[for=board-circle]', 'Circle'),
+          m('select.config-style-select[id=board-circle]', {
+            value: selectedCircle && selectedCircle.mGroupId,
+            onchange: (e) => {
+              selectedCircle = circles.find((item) => item.mGroupId === e.target.value);
+            },
+          }, circles.length
+            ? circles.map((item) => m('option', { value: item.mGroupId }, item.mGroupName))
+            : m('option[disabled]', 'No circles available')),
+        ]),
+        m('textarea.create-board-form__description[rows=5][placeholder=Describe your board]', {
           oninput: (e) => (body = e.target.value),
           value: body,
         }),
-        m('label[for=circletags]', 'Select Distribution'),
         m(
-          'select[id=circletags]',
-          {
-            value: circle,
-            onchange: (e) => {
-              circle = e.target.value;
-            },
-          },
-          [
-            m('option', { value: util.PUBLIC }, 'Public'),
-            m('option', { value: util.EXTERNAL }, 'Restricted to External Circle'),
-          ]
-        ),
-        m(
-          'button',
+          'button.create-board-form__submit',
           {
             onclick: async () => {
-              const res = await rs.rsJsonApiRequest('/rsposted/createBoard', {
-                name: title,
-                description: body,
-                authorId: identity,
+              const res = await rs.rsJsonApiRequest('/rsposted/createBoardV2', {
+                board_name: title,
+                board_description: body,
+                board_image: { mData: { base64: thumbnail } },
+                ...(Number(identity) !== 0 && { authorId: identity }),
                 circleType: Number(circle),
+                ...(Number(circle) === util.EXTERNAL && selectedCircle && {
+                  circleId: selectedCircle.mGroupId,
+                }),
               });
+              if (res.body.retval && vnode.attrs.onCreated) await vnode.attrs.onCreated();
               res.body.retval
                 ? util.popupmessage([
                     m('h3', 'Success'),
@@ -5093,13 +5260,167 @@ function createboard() {
                 : util.popupmessage([
                     m('h3', 'Error'),
                     m('hr'),
-                    m('p', 'Error in creating Board'),
+                    m('p', res.body.errorMessage || 'Error in creating Board'),
                   ]);
             },
           },
           'Create'
         ),
       ]),
+  };
+}
+
+function CreatePost() {
+  let mode = 'post';
+  let title = '';
+  let notes = '';
+  let link = '';
+  let authorId;
+  let identities = [];
+  let imageBase64;
+  let imagePreview = '';
+  let imageFileName = '';
+  let imageError = '';
+  let submitting = false;
+
+  const readDataUrl = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
+  const loadImage = (source) => new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = source;
+  });
+
+  async function preparePostImage(file) {
+    const original = await readDataUrl(file);
+    const isAnimatedFormat = file.type === 'image/gif' || file.type === 'image/webp';
+    if (isAnimatedFormat && file.size <= 194000) return original;
+
+    const sourceImage = await loadImage(original);
+    const scale = Math.min(1, 640 / sourceImage.naturalWidth, 480 / sourceImage.naturalHeight);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(sourceImage.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(sourceImage.naturalHeight * scale));
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(sourceImage, 0, 0, canvas.width, canvas.height);
+
+    let result;
+    for (let quality = 0.88; quality >= 0.35; quality -= 0.08) {
+      result = canvas.toDataURL('image/jpeg', quality);
+      const bytes = Math.ceil((result.length - result.indexOf(',') - 1) * 3 / 4);
+      if (bytes <= 190000) return result;
+    }
+    throw new Error('The image is too large to fit in a Board post.');
+  }
+
+  return {
+    oninit: async () => {
+      identities = (await peopleUtil.ownIds()) || [];
+      identities = identities.filter((id) => Number(id) !== 0);
+      authorId = identities[0];
+      m.redraw();
+    },
+    view: (vnode) => m('.widget.create-board-post', [
+      m('.create-board-post__heading', [
+        m('h3', 'Create a Post'),
+        m('p', 'Share an interesting post with a clear, descriptive title.'),
+      ]),
+      m('.create-board-post__modes', [
+        ['post', 'fa-comment-alt', 'Post'],
+        ['image', 'fa-image', 'Image'],
+        ['link', 'fa-link', 'Link'],
+      ].map(([value, icon, label]) => m('button[type=button]', {
+        class: mode === value ? 'active' : '',
+        onclick: () => (mode = value),
+      }, [m(`i.fas.${icon}`), ` ${label}`]))),
+      m('input.create-board-post__title[type=text][placeholder=Post title]', {
+        value: title,
+        oninput: (e) => (title = e.target.value),
+      }),
+      mode === 'link' && m('input.create-board-post__link[type=url][placeholder=https://example.com]', {
+        value: link,
+        oninput: (e) => (link = e.target.value),
+      }),
+      mode === 'image' && m('.create-board-post__image', [
+        m('.create-board-post__preview', [
+          imagePreview
+            ? m('img', { src: imagePreview, alt: 'Post image preview' })
+            : m('.create-board-post__placeholder', [m('i.fas.fa-image'), m('span', 'Post image')]),
+        ]),
+        m('input.create-board-post__file[type=file][id=board-post-image][accept=image/*]', {
+          onchange: async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            imageFileName = file.name;
+            imageError = '';
+            try {
+              imagePreview = await preparePostImage(file);
+              imageBase64 = imagePreview.substring(imagePreview.indexOf(',') + 1);
+            } catch (error) {
+              imagePreview = '';
+              imageBase64 = undefined;
+              imageError = error.message || 'The selected image could not be prepared.';
+            }
+            m.redraw();
+          },
+        }),
+        m('label.create-board-post__file-button[for=board-post-image]', {
+          title: imageFileName || 'Choose a post image',
+        }, [m('i.fas.fa-upload'), imagePreview ? ' Change image' : ' Choose image']),
+        imageError && m('.create-board-post__image-error', imageError),
+      ]),
+      mode === 'post' && m('textarea.create-board-post__notes[rows=8][placeholder=Text (optional)]', {
+        value: notes,
+        oninput: (e) => (notes = e.target.value),
+      }),
+      m('.create-board-post__author', [
+        m('label[for=board-post-author]', 'Post as'),
+        m('select.config-style-select.network-style-select[id=board-post-author]', {
+          value: authorId,
+          onchange: (e) => (authorId = e.target.value),
+          disabled: identities.length === 0,
+        }, identities.length
+          ? identities.map((id) => m('option', { value: id }, `${rs.userList.username(id)} (${id.slice(0, 8)}...)`))
+          : m('option', 'No signed identity available')),
+      ]),
+      m('button.create-board-post__submit[type=button]', {
+        disabled: submitting || !title.trim() || !authorId ||
+          (mode === 'link' && !link.trim()) || (mode === 'image' && !imageBase64),
+        onclick: async () => {
+          submitting = true;
+          m.redraw();
+          try {
+            const res = await rs.rsJsonApiRequest('/rsposted/createPostV2', {
+              boardId: vnode.attrs.boardId,
+              title: title.trim(),
+              link: { urlString: mode === 'link' ? link.trim() : '' },
+              notes: mode === 'link' ? '' : notes,
+              authorId,
+              image: { mData: { base64: mode === 'image' ? imageBase64 : undefined } },
+            });
+            if (res.body.retval) {
+              Data.Posts[vnode.attrs.boardId] = {};
+              await util.updateDisplayBoards(vnode.attrs.boardId);
+              util.popupmessage([m('h3', 'Success'), m('hr'), m('p', 'Post created successfully')]);
+            } else {
+              util.popupmessage([m('h3', 'Error'), m('hr'), m('p',
+                res.body.error_message || res.body.errorMessage || 'The post could not be created')]);
+            }
+          } finally {
+            submitting = false;
+            m.redraw();
+          }
+        },
+      }, submitting ? 'Posting…' : 'Post'),
+    ]),
   };
 }
 
@@ -5135,15 +5456,17 @@ function BoardView() {
       const boardInfo = Data.DisplayBoards[v.attrs.id] || {};
       const bname = boardInfo.name || '';
       const bimage = boardInfo.image || { mData: { base64: '' } };
+      //  userMap holds {name, isContact} objects: username() is what turns an
+      //  id into a string fit for the view.
       let bauthor = 'Unknown';
       if (boardInfo.author) {
-        if (rs.userList.userMap[boardInfo.author]) {
-          bauthor = rs.userList.userMap[boardInfo.author];
-        } else if (Number(boardInfo.author) === 0) {
-          bauthor = 'No Contact Author';
-        }
+        bauthor = Number(boardInfo.author) === 0
+          ? 'No Contact Author'
+          : rs.userList.username(boardInfo.author);
       }
       const bsubscribed = boardInfo.isSubscribed;
+      const subscribeFlags = Number(boardInfo.subscribeFlags || 0);
+      const canPublish = (subscribeFlags & (util.GROUP_SUBSCRIBE_ADMIN | util.GROUP_SUBSCRIBE_PUBLISH)) !== 0;
       const bposts = boardInfo.posts || 0;
       const createDate = boardInfo.created;
       const lastActivity = boardInfo.activity;
@@ -5236,12 +5559,14 @@ function BoardView() {
         m('.widget__body', [
           m('.media-item', [
             m('.media-item__details', [
-              m('img', {
-                src:
-                  !bimage || !bimage.mData || bimage.mData.base64 === ''
-                    ? 'data/streaming.png'
-                    : `data:image/png;base64,${bimage.mData.base64}`,
-              }),
+              bimage && bimage.mData && bimage.mData.base64
+                ? m('img', {
+                  src: `data:image/png;base64,${bimage.mData.base64}`,
+                  alt: `${bname} board thumbnail`,
+                })
+                : m('.board-detail-default-thumbnail[role=img][aria-label=Default board thumbnail]',
+                  m('i.fas.fa-globe')
+                ),
               m('.media-item__details-info', [
                 m('div', [m('b', 'Posts: '), m('span', bposts)]),
                 m('div', [
@@ -5275,7 +5600,15 @@ function BoardView() {
             {
               style: 'display:' + (bsubscribed ? 'block' : 'none'),
             },
-            m('.posts__heading', m('h3', 'Posts')),
+            m('.posts__heading.board-posts-heading', [
+              m('h3', 'Posts'),
+              canPublish && m('button.board-posts-heading__create[type=button][title=Create Post][aria-label=Create Post]', {
+                onclick: () => util.popupmessage(
+                  m(CreatePost, { boardId: v.attrs.id }),
+                  'create-board-post-modal'
+                ),
+              }, [m('i.fas.fa-plus'), m('span', 'Create Post')]),
+            ]),
             m(boardKanban.BoardView, {
               forumId: v.attrs.id,
               items,
@@ -5318,7 +5651,6 @@ function PostView() {
   const parentOf = (comment) => metaOf(comment).mParentId || comment.parentId || '';
   const textOf = (comment) => comment.mComment || comment.comment || comment.mBody || '';
   const nameOf = (id) => !id || Number(id) === 0 ? 'Anonymous' : (rs.userList.username(id) || rs.userList.userMap[id] || `${String(id).slice(0, 10)}…`);
-  const initials = (name) => String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
   const timeOf = (value) => {
     const seconds = value && typeof value === 'object' ? value.xint64 : value;
     const date = Number(seconds) ? new Date(Number(seconds) * 1000) : null;
@@ -5511,7 +5843,11 @@ function PostView() {
               m('span', [m('i.fas.fa-sort-amount-down'), ' Oldest first']),
             ]),
             m('.board-comment-composer', [
-              m('.board-comment-avatar', initials(nameOf(authorId))),
+              m('.board-comment-avatar', m(peopleUtil.IdentityAvatar, {
+                identityId: authorId,
+                name: nameOf(authorId),
+                size: '100%',
+              })),
               m('.board-comment-composer__body', [
                 replyTo ? m('.board-comment-composer__replying', ['Replying to ', m('b', nameOf(metaOf(replyTo).mAuthorId)), m('button[type=button][aria-label=Cancel reply]', { onclick: () => { replyTo = null; composerText = ''; } }, m('i.fas.fa-times'))]) : null,
                 identities.length ? m('select.board-comment-composer__identity', { value: authorId, onchange: (e) => { authorId = e.target.value; } }, identities.map((id) => m('option', { value: id }, nameOf(id)))) : null,
@@ -5545,7 +5881,11 @@ function PostView() {
     const repliesCount = node.children.length;
     const repliesExpanded = expandedReplies[key] === true;
     return m('.board-comment', { key: idOf(comment), class: depth ? 'board-comment--reply' : '' }, [
-      m('.board-comment-avatar', initials(name)),
+      m('.board-comment-avatar', m(peopleUtil.IdentityAvatar, {
+        identityId: meta.mAuthorId,
+        name,
+        size: '100%',
+      })),
       m('.board-comment__content', [
         m('.board-comment__header', [
           m('.board-comment__meta', [m('b', name), timeOf(meta.mPublishTs) ? m('span', timeOf(meta.mPublishTs)) : null]),
@@ -5785,7 +6125,9 @@ const Layout = () => {
                 widget.popupMessage(
                   m(viewUtil.createchannel, {
                     authorId: ownId,
-                  })
+                    onCreated: getChannels.load,
+                  }),
+                  'create-channel-modal'
                 ),
             },
             'Create Channel'
@@ -5866,58 +6208,111 @@ const Data = {
   Votes: {},
 };
 
-async function updatecontent(content, channelid) {
-  const res = await rs.rsJsonApiRequest('/rsgxschannels/getChannelContent', {
-    channelId: channelid,
-    contentsIds: [content.mMsgId],
-  });
-  if (res.body.retval && res.body.posts.length > 0) {
-    Data.Posts[channelid][content.mMsgId] = { post: res.body.posts[0], isSearched: true };
-  } else if (res.body.retval && res.body.comments.length > 0) {
-    if (Data.Comments[content.mThreadId] === undefined) {
-      Data.Comments[content.mThreadId] = {};
-    }
-    Data.Comments[content.mThreadId][content.mMsgId] = {
-      comment: res.body.comments[0],
-      showReplies: false,
-    }; //  Comments[post][comment]
-    const comm = res.body.comments[0];
-    if (Data.TopComments[comm.mMeta.mThreadId] === undefined) {
-      Data.TopComments[comm.mMeta.mThreadId] = {};
-    }
-    if (comm.mMeta.mThreadId === comm.mMeta.mParentId) {
-      // this is a check for the top level comments
-      Data.TopComments[comm.mMeta.mThreadId][comm.mMeta.mMsgId] = comm;
-      //  pushing top comments respective to post
-    } else {
-      if (Data.ParentCommentMap[comm.mMeta.mParentId] === undefined) {
-        Data.ParentCommentMap[comm.mMeta.mParentId] = {};
-      }
-      Data.ParentCommentMap[comm.mMeta.mParentId][comm.mMeta.mMsgId] = comm;
-    }
-  } else if (res.body.retval && res.body.votes.length > 0) {
-    const vote = res.body.votes[0];
+//  getChannelContent takes a set of ids, so a whole channel is fetched in a few
+//  requests instead of one per item. Chunked rather than sent as a single call so
+//  that no request grows unbounded and so the UI can paint as batches land.
+const CONTENT_BATCH_SIZE = 25;
 
-    if (Data.Votes[vote.mMeta.mThreadId] === undefined) {
-      Data.Votes[vote.mMeta.mThreadId] = {};
-    }
-    if (Data.Votes[vote.mMeta.mThreadId][vote.mMeta.mParentId] === undefined) {
-      Data.Votes[vote.mMeta.mThreadId][vote.mMeta.mParentId] = { upvotes: 0, downvotes: 0 };
-    }
-    if (vote.mVoteType === GXS_VOTE_UP) {
-      Data.Votes[vote.mMeta.mThreadId][vote.mMeta.mParentId].upvotes += 1;
-    }
+function storePost(post, channelid) {
+  const msgId = post.mMeta && post.mMeta.mMsgId;
+  if (!msgId) {
+    return;
+  }
+  Data.Posts[channelid][msgId] = { post, isSearched: true };
+}
 
-    if (vote.mVoteType === GXS_VOTE_DOWN) {
-      Data.Votes[vote.mMeta.mThreadId][vote.mMeta.mParentId].downvotes += 1;
+function storeComment(comm) {
+  const meta = comm.mMeta;
+  if (!meta) {
+    return;
+  }
+  if (Data.Comments[meta.mThreadId] === undefined) {
+    Data.Comments[meta.mThreadId] = {};
+  }
+  Data.Comments[meta.mThreadId][meta.mMsgId] = { comment: comm, showReplies: false }; //  Comments[post][comment]
+  if (Data.TopComments[meta.mThreadId] === undefined) {
+    Data.TopComments[meta.mThreadId] = {};
+  }
+  if (meta.mThreadId === meta.mParentId) {
+    // this is a check for the top level comments
+    Data.TopComments[meta.mThreadId][meta.mMsgId] = comm;
+    //  pushing top comments respective to post
+  } else {
+    if (Data.ParentCommentMap[meta.mParentId] === undefined) {
+      Data.ParentCommentMap[meta.mParentId] = {};
     }
+    Data.ParentCommentMap[meta.mParentId][meta.mMsgId] = comm;
   }
 }
 
-async function updatedisplaychannels(keyid, details) {
+function storeVote(vote) {
+  const meta = vote.mMeta;
+  if (!meta) {
+    return;
+  }
+  if (Data.Votes[meta.mThreadId] === undefined) {
+    Data.Votes[meta.mThreadId] = {};
+  }
+  if (Data.Votes[meta.mThreadId][meta.mParentId] === undefined) {
+    Data.Votes[meta.mThreadId][meta.mParentId] = { upvotes: 0, downvotes: 0 };
+  }
+  if (vote.mVoteType === GXS_VOTE_UP) {
+    Data.Votes[meta.mThreadId][meta.mParentId].upvotes += 1;
+  }
+
+  if (vote.mVoteType === GXS_VOTE_DOWN) {
+    Data.Votes[meta.mThreadId][meta.mParentId].downvotes += 1;
+  }
+}
+
+async function updatecontent(contentIds, channelid) {
+  const ids = Array.isArray(contentIds) ? contentIds : [contentIds];
+  if (ids.length === 0) {
+    return true;
+  }
+  const res = await rs.rsJsonApiRequest('/rsgxschannels/getChannelContent', {
+    channelId: channelid,
+    contentsIds: ids,
+  });
+  //  rsJsonApiRequest resolves to undefined when the request never made it out
+  if (!res || !res.body || !res.body.retval) {
+    return false;
+  }
+  //  A batch mixes the three kinds, so all three lists have to be walked. The
+  //  metadata of each item is used rather than the summary it was asked from.
+  (res.body.posts || []).forEach((post) => storePost(post, channelid));
+  (res.body.comments || []).forEach(storeComment);
+  (res.body.votes || []).forEach(storeVote);
+  return true;
+}
+
+// Large posts can contain base64 media. If RetroShare truncates a response,
+// retry it as two smaller requests until the problematic batch is isolated.
+async function updateContentBatch(contentIds, channelid) {
+  const loaded = await updatecontent(contentIds, channelid);
+  //  Splitting only makes sense against a core that answers: when it is gone,
+  //  every half fails too and one batch of 25 turns into 49 doomed requests.
+  //  connectionState stays true when a 200 arrived but its body was cut short,
+  //  which is exactly the case worth retrying smaller.
+  if (loaded || contentIds.length <= 1 || !rs.connectionState.status) {
+    if (!loaded) {
+      console.warn('Unable to load channel content item', contentIds[0]);
+    }
+    return;
+  }
+
+  const middle = Math.ceil(contentIds.length / 2);
+  await updateContentBatch(contentIds.slice(0, middle), channelid);
+  await updateContentBatch(contentIds.slice(middle), channelid);
+}
+
+async function updatedisplaychannels(keyid, details, loadContent = true) {
   const res1 = await rs.rsJsonApiRequest('/rsgxschannels/getChannelsInfo', {
     chanIds: [keyid],
   });
+  if (!res1 || !res1.body || !Array.isArray(res1.body.channelsInfo) || !res1.body.channelsInfo[0]) {
+    return;
+  }
   details = res1.body.channelsInfo[0];
   Data.DisplayChannels[keyid] = {
     // struct for a channel
@@ -5938,14 +6333,25 @@ async function updatedisplaychannels(keyid, details) {
   if (Data.Posts[keyid] === undefined) {
     Data.Posts[keyid] = {};
   }
+  // Channel lists only need metadata. Fetching every post, comment, vote and
+  // embedded image for every listed channel made large lists extremely slow.
+  if (!loadContent) {
+    return;
+  }
   const res2 = await rs.rsJsonApiRequest('/rsgxschannels/getContentSummaries', {
     channelId: keyid,
   });
 
-  if (res2.body.retval) {
-    res2.body.summaries.map(async (content) => {
-      await updatecontent(content, keyid);
-    });
+  if (!res2 || !res2.body || !res2.body.retval || !Array.isArray(res2.body.summaries)) {
+    return;
+  }
+
+  const ids = res2.body.summaries.map((content) => content.mMsgId).filter(Boolean);
+  //  Sequential on purpose: this runs once per channel of the list, so firing the
+  //  batches concurrently would put the browser back where it started.
+  for (let i = 0; i < ids.length; i += CONTENT_BATCH_SIZE) {
+    await updateContentBatch(ids.slice(i, i + CONTENT_BATCH_SIZE), keyid);
+    m.redraw();
   }
 }
 const DisplayChannelsFromList = () => {
@@ -5977,7 +6383,7 @@ const ChannelSummary = () => {
   return {
     oninit: (v) => {
       keyid = v.attrs.details.mGroupId;
-      updatedisplaychannels(keyid);
+      updatedisplaychannels(keyid, undefined, false);
     },
 
     view: (v) => {},
@@ -6111,6 +6517,15 @@ function channelThumbnailSrc(post) {
   return String(base64).startsWith('data:') ? base64 : `data:image/png;base64,${base64}`;
 }
 
+function channelPostCommentCount(postId, post) {
+  const loadedComments = Data.Comments[postId];
+  if (loadedComments) return Object.keys(loadedComments).length;
+
+  const meta = (post && post.mMeta) || {};
+  const count = post && (post.mComments ?? post.mCommentCount ?? post.commentCount);
+  return Number(count ?? meta.mComments ?? meta.mCommentCount ?? 0) || 0;
+}
+
 const ChannelFallbackThumbnail = () => ({
   view: (vnode) => m('.channel-post__placeholder', { style: {
     display: vnode.attrs.hidden ? 'none' : 'flex', flex: '1 1 auto', minHeight: '0',
@@ -6183,6 +6598,7 @@ async function parsefile(file, type) {
   return ansList;
 }
 const messageGroups = ['Public', 'Restricted Circle', 'Restricted Node Group'];
+const messageGroupLabels = ['🌐  Public', '◉  Restricted Circle', '⬢  Restricted Node Group'];
 const messageGroupsCode = [util.PUBLIC, util.EXTERNAL, util.NODES_GROUP]; // rsgxscirles.h:50
 
 function createchannel() {
@@ -6190,6 +6606,8 @@ function createchannel() {
   let body;
   let identity;
   let thumbnail;
+  let thumbnailPreview = '';
+  let thumbnailFileName = '';
   let selectedGroup = messageGroups[0];
   let selectedGroupCode = messageGroupsCode[0];
   let selectedCircle;
@@ -6203,34 +6621,58 @@ function createchannel() {
       const res = await rs.rsJsonApiRequest('/rsgxscircles/getCirclesSummaries');
       if (res.body.retval) {
         circles = res.body.circles;
-        selectedCircle = circles[0].mGroupName;
+        selectedCircle = circles[0];
       }
     },
     view: (vnode) =>
-      m('.widget', [
-        m('h3', 'Create Channel'),
-        m('hr'),
-        m('input[type=text][placeholder=Title]', {
-          style: { float: 'left' },
+      m('.widget.create-channel-form', [
+        m('.create-channel-form__heading', [
+          m('h3', 'Create Channel'),
+          m('p', 'Set up the channel appearance and publishing options.'),
+        ]),
+        m('input.create-channel-form__title[type=text][placeholder=Channel title]', {
           oninput: (e) => (title = e.target.value),
         }),
-        m('div', { style: { float: 'right', marginTop: '10px', marginBottom: '10px' } }, [
-          m('label[for=thumbnail]', 'Thumbnail: '),
-          m('input[type=file][name=files][id=thumbnail][accept=image/*]', {
+        m('.create-channel-form__thumbnail', [
+          m('.channel-thumbnail-preview', [
+            thumbnailPreview
+              ? m('img', { src: thumbnailPreview, alt: 'Channel thumbnail preview' })
+              : m('.channel-thumbnail-preview__placeholder', [
+                m('i.fas.fa-image'),
+                m('span', 'Channel logo'),
+                m('small', 'No image selected'),
+              ]),
+          ]),
+          m('span.create-channel-form__thumbnail-label', 'Thumbnail'),
+          m('input.create-channel-form__file-input[type=file][name=files][id=thumbnail][accept=image/*]', {
             onchange: async (e) => {
+              const file = e.target.files[0];
+              if (!file) {
+                thumbnail = undefined;
+                thumbnailPreview = '';
+                thumbnailFileName = '';
+                return;
+              }
+              thumbnailFileName = file.name;
               const reader = new FileReader();
               reader.onloadend = function () {
-                thumbnail = reader.result.substring(reader.result.indexOf(',') + 1);
+                thumbnailPreview = reader.result;
+                thumbnail = thumbnailPreview.substring(thumbnailPreview.indexOf(',') + 1);
+                m.redraw();
               };
-              reader.readAsDataURL(e.target.files[0]);
+              reader.readAsDataURL(file);
             },
           }),
+          m('label.create-channel-form__file-button[for=thumbnail]', {
+            title: thumbnailFileName || 'Choose a channel thumbnail',
+          }, [m('i.fas.fa-upload'), thumbnailPreview ? ' Change image' : ' Choose image']),
+          m('small', 'Square images work best.'),
         ]),
 
-        m('div', { style: { float: 'right', marginTop: '10px', marginBottom: '10px' } }, [
-          m('label[for=idtags]', 'Select identity: '),
+        m('.create-channel-form__field.create-channel-form__identity', [
+          m('label[for=idtags]', 'Publishing identity'),
           m(
-            'select[id=idtags]',
+            'select.config-style-select[id=idtags]',
             {
               value: identity,
               onchange: (e) => {
@@ -6243,49 +6685,43 @@ function createchannel() {
                   m(
                     'option',
                     { value: o },
-                    rs.userList.userMap[o]
-                      ? rs.userList.userMap[o].toLocaleString() + ' (' + o.slice(0, 8) + '...)'
-                      : 'No Signature'
+                    Number(o) === 0
+                      ? 'No Signature'
+                      : `${rs.userList.username(o)} (${o.slice(0, 8)}...)`
                   )
                 ),
             ]
           ),
         ]),
-        m('div', { style: { float: 'left', marginTop: '10px', marginBottom: '10px' } }, [
-          m('label[for=mtags]', 'Message Distribution: '),
+        m('.create-channel-form__field.create-channel-form__distribution', [
+          m('label[for=mtags]', 'Message distribution'),
           m(
-            'select[id=mtags]',
+            'select.config-style-select[id=mtags]',
             {
               value: selectedGroup,
               onchange: (e) => {
                 selectedGroup = messageGroups[e.target.selectedIndex];
                 selectedGroupCode = messageGroupsCode[e.target.selectedIndex];
-                widget.popupMessage(m(createchannel, { authorId: vnode.attrs.authorId }));
               },
             },
-            [messageGroups.map((group) => m('option', { value: group }, group))]
+            [messageGroups.map((group, index) => m(
+              'option',
+              { value: group },
+              messageGroupLabels[index]
+            ))]
           ),
         ]),
-        circles &&
+        circles && selectedGroupCode === util.EXTERNAL &&
           m(
-            'div',
-            {
-              style: {
-                float: 'left',
-                marginTop: '10px',
-                marginBottom: '10px',
-                display: selectedGroupCode === util.EXTERNAL ? 'block' : 'none',
-              },
-            },
+            '.create-channel-form__field.create-channel-form__circle',
             [
-              m('label[for=circlestag]', 'Circles: '),
+              m('label[for=circlestag]', 'Circle'),
               m(
-                'select[id=circlestag]',
+                'select.config-style-select[id=circlestag]',
                 {
-                  value: selectedCircle,
+                  value: selectedCircle && selectedCircle.mGroupName,
                   onchange: (e) => {
                     selectedCircle = circles[e.target.selectedIndex];
-                    // selectedGroupCode = messageGroupsCode[e.target.selectedIndex];
                   },
                 },
                 [
@@ -6296,13 +6732,12 @@ function createchannel() {
               ),
             ]
           ),
-        m('textarea[rows=5][placeholder=Description]', {
-          style: { width: '100%', display: 'block' },
+        m('textarea.create-channel-form__description[rows=5][placeholder=Describe your channel]', {
           oninput: (e) => (body = e.target.value),
           value: body,
         }),
         m(
-          'button',
+          'button.create-channel-form__submit',
           {
             onclick: async () => {
               const res = await rs.rsJsonApiRequest('/rsgxschannels/createChannelV2', {
@@ -6315,7 +6750,8 @@ function createchannel() {
                   selectedCircle && { circleId: selectedCircle.mGroupId }), // checks if the selectedGroup code is EXTERNAL
               });
               if (res.body.retval) {
-                util.updatedisplaychannels(res.body.channelId);
+                await util.updatedisplaychannels(res.body.channelId, undefined, false);
+                if (vnode.attrs.onCreated) await vnode.attrs.onCreated();
                 m.redraw();
               }
               res.body.retval === false
@@ -6336,65 +6772,138 @@ function createchannel() {
 const AddPost = () => {
   let content = '';
   let ptitle = '';
-  let pthumbnail = [];
-  let pfiles = [];
+  let pthumbnail;
+  let thumbnailPreview = '';
+  let thumbnailFileName = '';
+  let attachmentLabel = 'Choose files';
+  const attachmentItems = [];
+  const pfiles = [];
   let uploadFiles = true;
   return {
     view: (vnode) =>
-      m('.widget', [
-        m('h3', 'Add Post'),
-        m('hr'),
-        m('label[for=thumbnail]', 'Thumbnail: '),
-        m('input[type=file][name=files][id=thumbnail][accept=image/*]', {
-          onchange: async (e) => {
+      m('.widget.create-channel-post-form', [
+        m('.create-channel-post-form__heading', [
+          m('h3', 'Create Channel Post'),
+          m('p', 'Add a title, thumbnail, message, and optional attachments.'),
+        ]),
+        m('input.create-channel-post-form__title[type=text][placeholder=Post title]', {
+          value: ptitle,
+          oninput: (e) => (ptitle = e.target.value),
+        }),
+        m('.create-channel-post-form__thumbnail', [
+          m('.channel-post-thumbnail-preview', [
+            thumbnailPreview
+              ? m('img', { src: thumbnailPreview, alt: 'Post thumbnail preview' })
+              : m('.channel-post-thumbnail-preview__placeholder', [
+                m('i.fas.fa-image'),
+                m('span', 'Post thumbnail'),
+                m('small', 'No image selected'),
+              ]),
+          ]),
+          m('span.create-channel-post-form__thumbnail-label', 'Thumbnail'),
+          m('input.create-channel-post-form__file-input[type=file][name=files][id=channel-post-thumbnail][accept=image/*]', {
+          onchange: (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            thumbnailFileName = file.name;
             const reader = new FileReader();
             reader.onloadend = function () {
-              pthumbnail = reader.result.substring(reader.result.indexOf(',') + 1);
+              thumbnailPreview = reader.result;
+              pthumbnail = thumbnailPreview.substring(thumbnailPreview.indexOf(',') + 1);
+              m.redraw();
             };
-            reader.readAsDataURL(e.target.files[0]); // converts into base64 string
+            reader.readAsDataURL(file);
           },
-        }),
-        m('label[for=browse]', 'Attachments: '),
-        m('input[type=file][name=files][id=browse][multiple=multiple]', {
+          }),
+          m('label.create-channel-post-form__file-button[for=channel-post-thumbnail]', {
+            title: thumbnailFileName || 'Choose a post thumbnail',
+          }, [m('i.fas.fa-upload'), thumbnailPreview ? ' Change image' : ' Choose image']),
+          m('small', 'Square images work best.'),
+        ]),
+        m('.create-channel-post-form__attachments', [
+          m('label', 'Attachments'),
+          m('input.create-channel-post-form__file-input[type=file][name=files][id=channel-post-files][multiple=multiple]', {
+          disabled: !uploadFiles,
           // attachments option wrong hash, not working
           onchange: async (e) => {
+            const input = e.target;
+            const existingKeys = new Set(attachmentItems.map((file) => file.key));
+            const newFiles = Array.from(input.files).filter((file) => {
+              const key = `${file.name}:${file.size}:${file.lastModified}`;
+              return !existingKeys.has(key);
+            });
+            input.value = '';
+            if (newFiles.length === 0) return;
+
+            attachmentItems.push(...newFiles.map((file) => ({
+              key: `${file.name}:${file.size}:${file.lastModified}`,
+              name: file.name,
+              size: file.size,
+              hash: '',
+            })));
+            attachmentLabel = `${attachmentItems.length} file${attachmentItems.length === 1 ? '' : 's'} selected`;
             uploadFiles = false;
             filesUploadHashes.PostFiles = [];
-            pfiles = [];
-            for (let i = 0; i < e.target.files.length; i++) {
-              await parsefile(e.target.files[i], 'multiple');
+            m.redraw();
+            for (let i = 0; i < newFiles.length; i++) {
+              await parsefile(newFiles[i], 'multiple');
             }
             // console.log(filesUploadHashes.PostFiles, filesUploadHashes.PostFiles.length);
 
-            if (filesUploadHashes.PostFiles.length === e.target.files.length) {
-              for (let i = 0; i < e.target.files.length; i++) {
+            if (filesUploadHashes.PostFiles.length === newFiles.length) {
+              for (let i = 0; i < newFiles.length; i++) {
                 pfiles.push({
-                  name: e.target.files[i].name,
-                  size: e.target.files[i].size,
+                  name: newFiles[i].name,
+                  size: newFiles[i].size,
                   hash: filesUploadHashes.PostFiles[i],
                 });
               }
               uploadFiles = true;
+              attachmentItems.forEach((item, index) => {
+                item.hash = pfiles[index] && pfiles[index].hash;
+              });
+              m.redraw();
             }
           },
-        }),
-        m('input[type=text][placeholder=Title]', {
-          oninput: (e) => (ptitle = e.target.value),
-        }),
-        m('textarea[rows=5]', {
-          style: { width: '90%', display: 'block' },
+          }),
+          m('label.create-channel-post-form__attachment-button[for=channel-post-files]', [
+            m('i.fas.fa-paperclip'), ` ${attachmentLabel}`,
+          ]),
+          !uploadFiles && m('small', 'Preparing attachments...'),
+          attachmentItems.length > 0 && m('.create-channel-post-form__attachment-list',
+            attachmentItems.map((file, index) => m('.create-channel-post-form__attachment-item', [
+              m('i.fas.fa-file'),
+              m('.create-channel-post-form__attachment-info', [
+                m('span', { title: file.name }, file.name),
+                m('small', rs.formatBytes(file.size)),
+              ]),
+              m('button.create-channel-post-form__attachment-remove[type=button][title=Remove attachment]', {
+                disabled: !uploadFiles,
+                onclick: () => {
+                  attachmentItems.splice(index, 1);
+                  pfiles.splice(index, 1);
+                  attachmentLabel = attachmentItems.length
+                    ? `${attachmentItems.length} file${attachmentItems.length === 1 ? '' : 's'} selected`
+                    : 'Choose files';
+                },
+              }, m('i.fas.fa-times')),
+            ]))
+          ),
+        ]),
+        m('textarea.create-channel-post-form__description[rows=7][placeholder=Write your post]', {
           oninput: (e) => (content = e.target.value),
           value: content,
         }),
         m(
-          'button',
+          'button.create-channel-post-form__submit',
           {
+            disabled: !uploadFiles || !ptitle.trim(),
             onclick: async () => {
               if (uploadFiles) {
                 // console.log(vnode.attrs.chanId, ptitle, content, pfiles, pthumbnail);
                 const res = await rs.rsJsonApiRequest('/rsgxschannels/createPostV2', {
                   channelId: vnode.attrs.chanId,
-                  title: ptitle,
+                  title: ptitle.trim(),
                   mBody: content,
                   files: pfiles, // does not work for now
                   thumbnail: { mData: { base64: pthumbnail } },
@@ -6411,11 +6920,17 @@ const AddPost = () => {
               }
             },
           },
-          'Add'
+          uploadFiles ? 'Create Post' : 'Preparing…'
         ),
       ]),
   };
 };
+
+//  When each channel last had its content pulled, so that stepping in and out
+//  of a channel does not redownload it every time. Module level: the component
+//  is rebuilt at every visit, a field of it would forget instantly.
+const contentLoadedAt = {};
+const CONTENT_CACHE_MS = 60000;
 
 const ChannelView = () => {
   let cname = '';
@@ -6432,10 +6947,12 @@ const ChannelView = () => {
       if (Data.DisplayChannels[v.attrs.id]) {
         cname = Data.DisplayChannels[v.attrs.id].name;
         cimage = Data.DisplayChannels[v.attrs.id].image;
-        if (rs.userList.userMap[Data.DisplayChannels[v.attrs.id].author]) {
-          cauthor = rs.userList.userMap[Data.DisplayChannels[v.attrs.id].author];
-        } else if (Number(Data.DisplayChannels[v.attrs.id].author) === 0) {
+        //  Same as forum_view: userMap stores objects, username() is the only
+        //  accessor that yields a string.
+        if (Number(Data.DisplayChannels[v.attrs.id].author) === 0) {
           cauthor = 'No Contact Author';
+        } else if (Data.DisplayChannels[v.attrs.id].author) {
+          cauthor = rs.userList.username(Data.DisplayChannels[v.attrs.id].author);
         } else {
           cauthor = 'Unknown';
         }
@@ -6448,6 +6965,20 @@ const ChannelView = () => {
       if (Data.Posts[v.attrs.id]) {
         plist = Data.Posts[v.attrs.id];
       }
+      //  Channel lists load metadata only, so the content is fetched here, on
+      //  opening. oninit runs again on every visit though, and a 2000 item
+      //  channel would redownload its whole content, images included, each time
+      //  the user steps in and out. Skip it while the copy in memory is fresh,
+      //  and let it age so posts published meanwhile still show up. The callers
+      //  that publish or delete call updatedisplaychannels directly and are not
+      //  affected by this guard.
+      const lastLoad = contentLoadedAt[v.attrs.id] || 0;
+      if (Object.keys(plist).length > 0 && Date.now() - lastLoad < CONTENT_CACHE_MS) return;
+      contentLoadedAt[v.attrs.id] = Date.now();
+      util.updatedisplaychannels(v.attrs.id).then(() => {
+        plist = Data.Posts[v.attrs.id] || {};
+        m.redraw();
+      });
     },
     view: (v) => [
       m(
@@ -6482,12 +7013,14 @@ const ChannelView = () => {
       m('.widget__body', [
         m('.media-item', [
           m('.media-item__details', [
-            m('img', {
-              src:
-                cimage.mData.base64 === ''
-                  ? 'data/streaming.png'
-                  : `data:image/png;base64,${cimage.mData.base64}`,
-            }),
+            cimage && cimage.mData && cimage.mData.base64
+              ? m('img', {
+                src: `data:image/png;base64,${cimage.mData.base64}`,
+                alt: `${cname} channel thumbnail`,
+              })
+              : m('.channel-detail-default-thumbnail[role=img][aria-label=Default channel thumbnail]',
+                m('i.fas.fa-tv')
+              ),
             m('.media-item__details-info', [
               m('div', [m('b', 'Posts: '), m('span', cposts)]),
               m('div', [
@@ -6522,18 +7055,23 @@ const ChannelView = () => {
             style: 'display: ' + (csubscribed ? 'flex' : 'none'),
           },
           [
-            m('.posts__heading', [
+            m('.posts__heading.channel-posts-heading', [
               m('h3', 'Posts'),
               mychannel &&
                 m(
-                  'button',
-                  { onclick: () => widget.popupMessage(m(AddPost, { chanId: v.attrs.id })) },
-                  ['Add Post', m('i.fas.fa-edit')]
+                  'button.channel-posts-heading__create[type=button][title=Add Post][aria-label=Add Post]',
+                  { onclick: () => widget.popupMessage(
+                    m(AddPost, { chanId: v.attrs.id }),
+                    'create-channel-post-modal'
+                  ) },
+                  [m('i.fas.fa-edit'), m('span', 'Add Post')]
                 ),
             ]),
             m(
               '.posts-container',
-              Object.keys(plist).map((key, index) => [
+              Object.keys(plist).map((key) => {
+                const commentCount = channelPostCommentCount(key, plist[key].post);
+                return [
                 m(
                   '.posts-container-card',
                   {
@@ -6554,6 +7092,13 @@ const ChannelView = () => {
                     },
                   },
                   [
+                    commentCount > 0 && m('.channel-post-comment-badge', {
+                      title: `${commentCount} comment${commentCount === 1 ? '' : 's'}`,
+                      'aria-label': `${commentCount} comment${commentCount === 1 ? '' : 's'}`,
+                    }, [
+                      m('i.fas.fa-comment'),
+                      m('span', commentCount),
+                    ]),
                     channelThumbnailSrc(plist[key].post)
                       ? [
                           m('img', {
@@ -6570,7 +7115,8 @@ const ChannelView = () => {
                     m('p', plist[key].post.mMeta.mMsgName),
                   ]
                 ),
-              ])
+                ];
+              })
             ),
           ]
         ),
@@ -6593,200 +7139,6 @@ async function addvote(voteType, vchannelId, vpostId, vauthorId, vcommentId) {
   }
 }
 
-const AddComment = () => {
-  let inputComment = '';
-  let identity;
-  return {
-    oninit: (vnode) => {
-      if (vnode.attrs.authorId) {
-        identity = vnode.attrs.authorId[0];
-      }
-    },
-    view: (vnode) =>
-      m('.widget', [
-        m('h3', 'Add Comment'),
-        m('label[for=tags]', 'Select identity'),
-        m(
-          'select[id=idtags]',
-          {
-            value: identity,
-            onchange: (e) => {
-              identity = vnode.attrs.authorId[e.target.selectedIndex];
-            },
-          },
-          [
-            vnode.attrs.authorId &&
-              vnode.attrs.authorId.map((o) =>
-                m(
-                  'option',
-                  { value: o },
-                  rs.userList.userMap[o].toLocaleString() + ' (' + o.slice(0, 8) + '...)'
-                )
-              ),
-          ]
-        ),
-        m('hr'),
-        (vnode.attrs.parent_comment !== '') > 0
-          ? [m('h5', 'Reply to comment: '), m('p', vnode.attrs.parent_comment)] // if it is add reply option
-          : '',
-        m('textarea[rows=5]', {
-          style: { width: '90%', display: 'block' },
-          oninput: (e) => (inputComment = e.target.value),
-          value: inputComment,
-        }),
-        m(
-          'button',
-          {
-            onclick: async () => {
-              const res = await rs.rsJsonApiRequest('/rsgxschannels/createCommentV2', {
-                channelId: vnode.attrs.channelId,
-                threadId: vnode.attrs.threadId,
-                comment: inputComment,
-                authorId: identity,
-                parentId: vnode.attrs.parentId,
-              });
-
-              res.body.retval === false
-                ? widget.popupMessage([m('h3', 'Error'), m('hr'), m('p', res.body.errorMessage)])
-                : widget.popupMessage([
-                    m('h3', 'Success'),
-                    m('hr'),
-                    m('p', 'Comment added successfully'),
-                  ]);
-              util.updatedisplaychannels(vnode.attrs.channelId);
-              m.redraw();
-            },
-          },
-          'Add'
-        ),
-      ]),
-  };
-};
-function displaycomment() {
-  // recursive function to display comments
-  return {
-    oninit: (v) => {},
-    view: ({ attrs: { commentStruct, identity, replyDepth, voteIdentity } }) => {
-      const comment = commentStruct.comment;
-      let cUpVotes = 0;
-      let cDownVotes = 0;
-      let parMap = {};
-      if (Data.ParentCommentMap[comment.mMeta.mMsgId]) {
-        parMap = Data.ParentCommentMap[comment.mMeta.mMsgId];
-      }
-      if (
-        Data.Votes[comment.mMeta.mThreadId] &&
-        Data.Votes[comment.mMeta.mThreadId][comment.mMeta.mMsgId]
-      ) {
-        cUpVotes = Data.Votes[comment.mMeta.mThreadId][comment.mMeta.mMsgId].upvotes;
-        cDownVotes = Data.Votes[comment.mMeta.mThreadId][comment.mMeta.mMsgId].downvotes;
-      }
-      return [
-        m('tr', [
-          Object.keys(parMap).length // if it has replies
-            ? m(
-                'td',
-                m('i.fas.fa-angle-right', {
-                  class: 'fa-rotate-' + (commentStruct.showReplies ? '90' : '0'),
-                  style: 'cursor:pointer',
-                  onclick: () => {
-                    commentStruct.showReplies = !commentStruct.showReplies;
-                  },
-                })
-              )
-            : m('td', ''),
-
-          m(
-            'td',
-            {
-              style: {
-                position: 'relative',
-                '--replyDepth': replyDepth,
-                left: 'calc(30px*var(--replyDepth))', // shifts the reply by 30px
-              },
-            },
-            [
-              comment.mComment,
-              m('options', { style: 'display:block' }, [
-                m(
-                  'button',
-                  {
-                    style: 'font-size:15px',
-                    onclick: () =>
-                      widget.popupMessage(
-                        m(AddComment, {
-                          parent_comment: comment.mComment,
-                          channelId: comment.mMeta.mGroupId,
-                          authorId: identity,
-                          threadId: comment.mMeta.mThreadId,
-                          parentId: comment.mMeta.mMsgId,
-                        })
-                      ),
-                  },
-                  'Reply'
-                ),
-                voteIdentity &&
-                  m(
-                    'button',
-                    {
-                      style: 'font-size:15px',
-                      onclick: () =>
-                        addvote(
-                          util.GXS_VOTE_UP,
-                          comment.mMeta.mGroupId,
-                          comment.mMeta.mThreadId,
-                          voteIdentity,
-                          comment.mMeta.mMsgId
-                        ),
-                    },
-                    m('i.fas.fa-thumbs-up')
-                  ),
-                voteIdentity &&
-                  m(
-                    'button',
-                    {
-                      style: 'font-size:15px',
-                      onclick: () =>
-                        addvote(
-                          util.GXS_VOTE_DOWN,
-                          comment.mMeta.mGroupId,
-                          comment.mMeta.mThreadId,
-                          voteIdentity,
-                          comment.mMeta.mMsgId
-                        ),
-                    },
-                    m('i.fas.fa-thumbs-down')
-                  ),
-              ]),
-            ]
-          ),
-
-          m('td', rs.userList.userMap[comment.mMeta.mAuthorId]),
-          m(
-            'td',
-            typeof comment.mMeta.mPublishTs === 'object'
-              ? new Date(comment.mMeta.mPublishTs.xint64 * 1000).toLocaleString()
-              : 'undefined'
-          ),
-          m('td', comment.mScore),
-          m('td', cUpVotes),
-          m('td', cDownVotes),
-        ]),
-        commentStruct.showReplies && // recursive calls for the replies
-          // parMap.map((value) =>
-          Object.keys(parMap).map((key, index) =>
-            m(displaycomment, {
-              commentStruct: Data.Comments[parMap[key].mMeta.mThreadId][parMap[key].mMeta.mMsgId],
-              voteIdentity,
-              identity,
-              replyDepth: replyDepth + 1, // for the css
-            })
-          ),
-      ];
-    },
-  };
-}
-
 /* Modern threaded comment experience for channel posts. */
 const ChannelComments = () => {
   let replyTo = null;
@@ -6800,7 +7152,6 @@ const ChannelComments = () => {
   const metaOf = (comment) => (comment && comment.mMeta) || {};
   const idOf = (comment) => metaOf(comment).mMsgId || comment.msgId;
   const nameOf = (id) => rs.userList.username(id) || rs.userList.userMap[id] || `${String(id || 'Unknown').slice(0, 10)}…`;
-  const initials = (name) => String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
   const dateOf = (value) => {
     const seconds = value && typeof value === 'object' ? value.xint64 : value;
     return Number(seconds) ? new Date(Number(seconds) * 1000).toLocaleString() : '';
@@ -6863,7 +7214,11 @@ const ChannelComments = () => {
     const votes = (Data.Votes[meta.mThreadId] && Data.Votes[meta.mThreadId][id]) || { upvotes: 0, downvotes: 0 };
     const repliesExpanded = expandedReplies[id] === true;
     return m('.board-comment', { key: id }, [
-      m('.board-comment-avatar', initials(name)),
+      m('.board-comment-avatar', m(peopleUtil.IdentityAvatar, {
+        identityId: meta.mAuthorId,
+        name,
+        size: '100%',
+      })),
       m('.board-comment__content', [
         m('.board-comment__header', [
           m('.board-comment__meta', [m('b', name), dateOf(meta.mPublishTs) ? m('span', dateOf(meta.mPublishTs)) : null]),
@@ -6902,7 +7257,11 @@ const ChannelComments = () => {
           ]),
         ]),
         m('.board-comment-composer', [
-          m('.board-comment-avatar', initials(nameOf(identity))),
+          m('.board-comment-avatar', m(peopleUtil.IdentityAvatar, {
+            identityId: identity,
+            name: nameOf(identity),
+            size: '100%',
+          })),
           m('.board-comment-composer__body', [
             replyTo ? m('.board-comment-composer__replying', ['Replying to ', m('b', nameOf(metaOf(replyTo).mAuthorId)), m('button[type=button][aria-label=Cancel reply]', { onclick: () => { replyTo = null; text = ''; } }, m('i.fas.fa-times'))]) : null,
             identities.length ? m('select.board-comment-composer__identity', { value: identity, onchange: (e) => { identity = e.target.value; } }, identities.map((id) => m('option', { value: id }, nameOf(id)))) : null,
@@ -7598,18 +7957,11 @@ const chatEmoji = require('chat/chat_emoji');
 const HistoryBrowserModal = require('people/people_history');
 
 const {
-  get64Num,
-  loadLobbyDetails,
-  loadDistantChatDetails,
   sortLobbies,
-  getNicknameColor,
   getStatusColor,
   getStatusTooltip,
-  renderTextWithEmoji,
   getSafeAvatar,
-  MobileState,
   ChatRoomsModel,
-  Message,
   ChatLobbyModel,
   ChatHubState,
 } = chatState;
@@ -7782,73 +8134,6 @@ function pollHashStatus(localpath) {
 }
 
 // ************************* views ****************************
-
-const Lobby = () => {
-  return {
-    view: (vnode) => {
-      const { info, tagname, onclick, lobbytagname = 'mainname' } = vnode.attrs;
-      return m(
-        ChatLobbyModel.selected(info, '.selected-lobby', tagname),
-        {
-          key: rs.idToHex(info.lobby_id),
-          onclick,
-        },
-        [
-          m('h5', { class: lobbytagname }, info.lobby_name === '' ? '<unnamed>' : info.lobby_name),
-          m('.topic', info.lobby_topic),
-        ]
-      );
-    },
-  };
-};
-
-const LobbyList = {
-  view(vnode) {
-    const tagname = vnode.attrs.tagname;
-    const lobbytagname = vnode.attrs.lobbytagname;
-    const onclick = vnode.attrs.onclick || (() => null);
-    return [
-      vnode.attrs.rooms.map((info) =>
-        m(Lobby, {
-          info,
-          tagname,
-          lobbytagname,
-          onclick: onclick(info),
-        })
-      ),
-    ];
-  },
-};
-
-const SubscribedLobbies = {
-  view() {
-    return m('.widget', [
-      m('.widget__heading', m('h3', 'Subscribed chat rooms')),
-      m('.widget__body', [
-        m(LobbyList, {
-          rooms: sortLobbies(Object.values(ChatRoomsModel.subscribedRooms)),
-          tagname: '.lobby.subscribed',
-          onclick: ChatLobbyModel.switchToEvent,
-        }),
-      ]),
-    ]);
-  },
-};
-
-const PublicLobbies = {
-  view() {
-    return m('.widget', [
-      m('.widget__heading', m('h3', 'Public chat rooms')),
-      m('.widget__body', [
-        m(LobbyList, {
-          rooms: (ChatRoomsModel.allRooms || []).filter((info) => !ChatRoomsModel.subscribed(info)),
-          tagname: '.lobby.public',
-          onclick: ChatLobbyModel.setupEvent,
-        }),
-      ]),
-    ]);
-  },
-};
 
 // ************************* Chat Hub Sub-Components ****************************
 
@@ -8601,8 +8886,6 @@ const ChatRoomDetailView = () => {
       const room = ChatHubState.selectedRoom;
       if (!room) return null;
 
-      let participantCount = 0;
-      let participantNames = [];
       let participants = [];
 
       if (room.gxs_ids) {
@@ -8630,9 +8913,8 @@ const ChatRoomDetailView = () => {
         }
       }
 
-      participantCount = participants.length;
-      participantNames = participants.map((p) => p.name);
-      participantNames.sort((a, b) => a.localeCompare(b));
+      const participantCount = participants.length;
+      const participantNames = participants.map((p) => p.name).sort((a, b) => a.localeCompare(b));
 
       const lobbyHexId = rs.idToHex(room.lobby_id);
       const privacy = getLobbyPrivacyInfo(room);
@@ -9223,74 +9505,6 @@ const Layout = {
   },
 };
 
-const LayoutSingle = () => {
-  const onResize = () => {
-    const element = document.querySelector('.messages');
-    if (element) element.scrollTop = element.scrollHeight;
-  };
-  return {
-    oninit: () => {
-      ChatLobbyModel.loadLobby(m.route.param('lobby'));
-      window.addEventListener('resize', onResize);
-    },
-    onremove: () => window.removeEventListener('resize', onResize),
-    view: (vnode) => {
-      const chatType = ChatLobbyModel.currentLobby.chatType;
-      const isPrivate = chatType === 1 || chatType === 2;
-      const isRoom = chatType === 3;
-      return m(
-        '.node-panel.chat-panel.chat-room',
-        {
-          class:
-            (MobileState.showLobbies ? 'show-lobbies ' : '') +
-            (MobileState.showUsers ? 'show-users ' : '') +
-            (isPrivate ? 'no-lobbies' : ''),
-        },
-        [
-          m('.chat-overlay', { onclick: () => MobileState.closeAll() }),
-          m(
-            '.messages' + (isRoom ? '.compact-container' : ''),
-            { onclick: () => MobileState.closeAll() },
-            ChatLobbyModel.messages
-          ),
-          m(
-            '.chatMessage',
-            {},
-            [
-              m('textarea.chatMsg', {
-                placeholder: 'Type a message...',
-                enterkeyhint: 'send',
-                onkeydown: (e) => {
-                  if ((e.key === 'Enter' || e.keyCode === 13) && !e.shiftKey) {
-                    const msg = e.target.value;
-                    if (msg.trim() === '') return false;
-                    e.target.value = ' sending ... ';
-                    ChatLobbyModel.sendMessage(msg, () => (e.target.value = ''));
-                    return false;
-                  }
-                },
-              }),
-              m(
-                'button.chat-send-btn',
-                {
-                  onclick: (e) => {
-                    const textarea = e.target.closest('.chatMessage').querySelector('textarea');
-                    const msg = textarea.value;
-                    if (msg.trim() === '') return;
-                    textarea.value = ' sending ... ';
-                    ChatLobbyModel.sendMessage(msg, () => (textarea.value = ''));
-                  },
-                },
-                m('i.fas.fa-paper-plane')
-              ),
-            ]
-          ),
-        ]
-      );
-    },
-  };
-};
-
 /*
     /rsChats/initiateDistantChatConnexion
    * @param[in] to_pid RsGxsId to start the connection
@@ -9596,6 +9810,27 @@ function getStatusTooltip(status) {
   }
 }
 
+// Chat messages travel as HTML. Stripping the tags is not enough: the entities
+// they leave behind are still raw text and end up displayed verbatim, the most
+// visible one being the &nbsp; that Qt emits for leading and repeated spaces.
+// A textarea decodes them without ever parsing markup, since its content model
+// is plain text and nothing in the string can become an element.
+function decodeHtmlEntities(text) {
+  const el = document.createElement('textarea');
+  el.innerHTML = text;
+  return el.value;
+}
+
+// Turn the HTML payload of a chat message into the text we display.
+function htmlToText(text) {
+  return decodeHtmlEntities(
+    text
+      .replaceAll('<br/>', '\n')
+      .replaceAll('<br>', '\n')
+      .replace(new RegExp('<style[^<]*</style>|<[^>]*>', 'gm'), '')
+  );
+}
+
 function renderChatMessage(rawText) {
   if (!rawText) return '';
 
@@ -9610,10 +9845,7 @@ function renderChatMessage(rawText) {
     while ((match = imgRegex.exec(rawText)) !== null) {
       if (match.index > lastIndex) {
         const precedingText = rawText.substring(lastIndex, match.index);
-        const cleanText = precedingText
-          .replaceAll('<br/>', '\n')
-          .replaceAll('<br>', '\n')
-          .replace(new RegExp('<style[^<]*</style>|<[^>]*>', 'gm'), '');
+        const cleanText = htmlToText(precedingText);
         if (cleanText) {
           parts.push(renderTextWithEmoji(cleanText));
         }
@@ -9649,10 +9881,7 @@ function renderChatMessage(rawText) {
 
     if (lastIndex < rawText.length) {
       const trailingText = rawText.substring(lastIndex);
-      const cleanText = trailingText
-        .replaceAll('<br/>', '\n')
-        .replaceAll('<br>', '\n')
-        .replace(new RegExp('<style[^<]*</style>|<[^>]*>', 'gm'), '');
+      const cleanText = htmlToText(trailingText);
       if (cleanText) {
         parts.push(renderFormattedMessageText(cleanText));
       }
@@ -9686,12 +9915,11 @@ function renderChatMessage(rawText) {
   }
 
   // 3. Normal text message
-  const cleanText = rawText
-    .replace(/<blockquote[^>]*>/gi, '\n> ')
-    .replace(/<\/blockquote>/gi, '\n')
-    .replaceAll('<br/>', '\n')
-    .replaceAll('<br>', '\n')
-    .replace(new RegExp('<style[^<]*</style>|<[^>]*>', 'gm'), '');
+  const cleanText = htmlToText(
+    rawText
+      .replace(/<blockquote[^>]*>/gi, '\n> ')
+      .replace(/<\/blockquote>/gi, '\n')
+  );
 
   return renderFormattedMessageText(cleanText);
 }
@@ -13708,7 +13936,9 @@ const Layout = () => {
                 util.popupmessage(
                   m(viewUtil.createforum, {
                     authorId: ownId,
-                  })
+                    onCreated: getForums.load,
+                  }),
+                  'create-forum-modal'
                 ),
             },
             'Create Forum'
@@ -13750,6 +13980,7 @@ module.exports = {
 require.register("forums/forums_util", function(exports, require, module) { 
 const m = require('mithril');
 const rs = require('rswebui');
+const widget = require('widgets');
 
 const GROUP_SUBSCRIBE_ADMIN = 0x01; // means: you have the admin key for this group
 const GROUP_SUBSCRIBE_PUBLISH = 0x02; // means: you have the publish key for thiss group. Typical use: publish key in forums are shared with specific friends.
@@ -14001,22 +14232,8 @@ const SearchBar = () => {
       }),
   };
 };
-function popupmessage(message) {
-  const container = document.getElementById('modal-container');
-  container.style.display = 'block';
-  m.render(
-    container,
-    m('.modal-content', [
-      m(
-        'button.red',
-        {
-          onclick: () => (container.style.display = 'none'),
-        },
-        m('i.fas.fa-times')
-      ),
-      message,
-    ])
-  );
+function popupmessage(message, modalClass = '') {
+  widget.popupMessage(message, modalClass);
 }
 
 module.exports = {
@@ -14046,63 +14263,149 @@ const m = require('mithril');
 const rs = require('rswebui');
 const util = require('forums/forums_util');
 const peopleUtil = require('people/people_util');
+const chatEmoji = require('chat/chat_emoji');
 const { loadPostContent, getTimestampValue, formatTimestamp } = require('./forums_util');
+const CIRCLE_PUBLIC = 1;
+const CIRCLE_EXTERNAL = 2;
 
 function createforum() {
   let title;
   let body;
   let identity;
+  let circle = CIRCLE_PUBLIC;
+  let circles = [];
+  let selectedCircle;
+  let enableModerators = false;
+  let moderatorFilter = 'all';
+  let moderatorSearch = '';
+  const moderators = new Set();
   return {
-    oninit: (vnode) => {
+    oninit: async (vnode) => {
       if (vnode.attrs.authorId) {
         identity = vnode.attrs.authorId[0];
       }
+      const res = await rs.rsJsonApiRequest('/rsgxscircles/getCirclesSummaries');
+      if (res.body.retval) {
+        circles = res.body.circles || [];
+        selectedCircle = circles[0];
+      }
     },
-    view: (vnode) =>
-      m('.widget', [
-        m('h3', 'Create Forum'),
-        m('hr'),
-        m('input[type=text][placeholder=Title]', {
+    view: (vnode) => {
+      const query = moderatorSearch.trim().toLowerCase();
+      const identities = (rs.userList.users || [])
+        .filter((item) => item && item.mGroupId)
+        .filter((item) => moderatorFilter !== 'contacts' ||
+          (rs.userList.userMap[item.mGroupId] && rs.userList.userMap[item.mGroupId].isContact))
+        .filter((item) => !query || `${item.mGroupName} ${item.mGroupId}`.toLowerCase().includes(query))
+        .sort((a, b) => (a.mGroupName || '').localeCompare(b.mGroupName || ''));
+      return m('.widget.create-forum-form', [
+        m('.create-forum-form__heading', [
+          m('h3', 'Create Forum'),
+          m('p', 'Set up the forum and choose its publishing permissions.'),
+        ]),
+        m('input.create-forum-form__title[type=text][placeholder=Forum title]', {
           oninput: (e) => (title = e.target.value),
         }),
-        m('label[for=tags]', 'Select identity'),
-        m(
-          'select[id=idtags]',
-          {
+        m('.create-forum-form__field', [
+          m('label[for=forum-idtags]', 'Owner identity'),
+          m('select.config-style-select[id=forum-idtags]', {
             value: identity,
-            onchange: (e) => {
-              identity = vnode.attrs.authorId[e.target.selectedIndex];
-            },
-          },
-          [
-            vnode.attrs.authorId &&
-            vnode.attrs.authorId.map((o) =>
-              m(
-                'option',
-                { value: o },
-                rs.userList.username(o)
-                  ? rs.userList.username(o) + ' (' + o.slice(0, 8) + '...)'
-                  : 'No Signature'
-              )
-            ),
-          ]
-        ),
-        m('textarea[rows=5][placeholder=Description]', {
-          style: { width: '90%', display: 'block' },
+            onchange: (e) => (identity = vnode.attrs.authorId[e.target.selectedIndex]),
+          }, vnode.attrs.authorId && vnode.attrs.authorId.map((o) => m('option', { value: o },
+            Number(o) === 0 ? 'No Signature' : `${rs.userList.username(o)} (${o.slice(0, 8)}...)`))),
+        ]),
+        m('.create-forum-form__field', [
+          m('label[for=forum-distribution]', 'Message distribution'),
+          m('select.config-style-select[id=forum-distribution]', {
+            value: circle,
+            onchange: (e) => (circle = e.target.value),
+          }, [
+            m('option', { value: CIRCLE_PUBLIC }, '\u{1F310}  Public'),
+            m('option', { value: CIRCLE_EXTERNAL }, '\u25C9  Restricted to External Circle'),
+          ]),
+        ]),
+        Number(circle) === CIRCLE_EXTERNAL && m('.create-forum-form__field', [
+          m('label[for=forum-circle]', 'Circle'),
+          m('select.config-style-select[id=forum-circle]', {
+            value: selectedCircle && selectedCircle.mGroupId,
+            onchange: (e) => (selectedCircle = circles.find((item) => item.mGroupId === e.target.value)),
+          }, circles.length
+            ? circles.map((item) => m('option', { value: item.mGroupId }, item.mGroupName))
+            : m('option[disabled]', 'No circles available')),
+        ]),
+        m('.create-forum-form__moderators', [
+          m('.create-forum-form__moderators-heading', [
+            m('label.create-forum-form__moderators-toggle', [
+              m('input[type=checkbox]', {
+                checked: enableModerators,
+                onchange: (e) => {
+                  enableModerators = e.target.checked;
+                  if (!enableModerators) {
+                    moderators.clear();
+                  }
+                },
+              }),
+              m('span', 'Add moderators'),
+            ]),
+            enableModerators && m('span', `${moderators.size} selected`),
+          ]),
+          enableModerators && m('.create-forum-form__moderator-controls', [
+            m('select.config-style-select[id=forum-moderator-filter]', {
+              value: moderatorFilter,
+              onchange: (e) => {
+                moderatorFilter = e.target.value;
+              },
+            }, [
+              m('option[value=all]', 'All identities'),
+              m('option[value=contacts]', 'My contacts'),
+            ]),
+            m('.create-forum-form__search', [
+              m('i.fas.fa-search'),
+              m('input[id=forum-moderator-search][type=search][placeholder=Search identities]', {
+                value: moderatorSearch,
+                oninput: (e) => (moderatorSearch = e.target.value),
+              }),
+            ]),
+            m('.create-forum-form__moderator-list', identities.length
+              ? identities.map((item) => m('label.create-forum-form__moderator', [
+              m('input[type=checkbox]', {
+                checked: moderators.has(item.mGroupId),
+                onchange: (e) => e.target.checked
+                  ? moderators.add(item.mGroupId)
+                  : moderators.delete(item.mGroupId),
+              }),
+              m(peopleUtil.UserAvatar, {
+                firstLetter: (item.mGroupName || '?').slice(0, 1).toUpperCase(),
+                identityId: item.mGroupId,
+                size: 30,
+                isSquare: true,
+              }),
+              m('span', [
+                m('b', item.mGroupName || 'Unnamed identity'),
+                m('small', item.mGroupId),
+              ]),
+              ]))
+              : m('.create-forum-form__empty', query ? 'No matching identities' : 'No identities available')),
+          ]),
+        ]),
+        m('textarea.create-forum-form__description[rows=5][placeholder=Describe your forum]', {
           oninput: (e) => (body = e.target.value),
           value: body,
         }),
-        m(
-          'button',
+        m('button.create-forum-form__submit',
           {
             onclick: async () => {
               const res = await rs.rsJsonApiRequest('/rsgxsforums/createForumV2', {
                 name: title,
                 description: body,
-                ...(Number(identity) !== 0 && { authorId: identity }), // if id == '0', authorId is left empty
+                ...(Number(identity) !== 0 && { authorId: identity }),
+                moderatorsIds: enableModerators ? Array.from(moderators) : [],
+                circleType: Number(circle),
+                ...(Number(circle) === CIRCLE_EXTERNAL && selectedCircle && { circleId: selectedCircle.mGroupId }),
               });
               if (res.body.retval) {
-                util.updatedisplayforums(res.body.forumId);
+                await util.updatedisplayforums(res.body.forumId);
+                if (vnode.attrs.onCreated) await vnode.attrs.onCreated();
                 m.redraw();
               }
               res.body.retval === false
@@ -14116,70 +14419,335 @@ function createforum() {
           },
           'Create'
         ),
-      ]),
+      ]);
+    },
   };
 }
 const AddThread = () => {
+  const MAX_GXS_MESSAGE_SIZE = 199000;
   let title = '';
   let body = '';
   let identity;
+  let showEmojiPicker = false;
+  let emojiCategory = 'Smileys';
+  let showFilePanel = false;
+  let isFullscreen = false;
+  let filePath = '';
+  let filePathNeedsPrefix = false;
+  let fileHashing = false;
+  let fileError = '';
+  let closed = false;
+  const attachments = [];
+  const inlineImages = [];
+
+  const escapeHtml = (value) => String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+
+  const formatSize = (bytes) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const pollFileHash = (localpath, attempt = 0) => {
+    if (closed) return;
+    rs.rsJsonApiRequest('/rsFiles/ExtraFileStatus', { localpath }, (data) => {
+      if (closed) return;
+      const info = data && data.retval && data.info;
+      if (info && info.hash && info.hash !== '0000000000000000000000000000000000000000') {
+        const size = Number(info.size && (info.size.xint64 || info.size.xstr64 || info.size)) || 0;
+        if (!attachments.some((file) => file.hash === info.hash)) {
+          attachments.push({ name: info.name, size, hash: info.hash });
+        }
+        fileHashing = false;
+        filePath = '';
+        showFilePanel = false;
+        fileError = '';
+        m.redraw();
+      } else if (fileHashing && attempt < 120) {
+        setTimeout(() => pollFileHash(localpath, attempt + 1), 500);
+      } else {
+        fileHashing = false;
+        fileError = 'RetroShare could not hash this file. Check the full local path.';
+        m.redraw();
+      }
+    });
+  };
+
+  const attachFile = () => {
+    const localpath = filePath.trim();
+    if (!localpath || filePathNeedsPrefix || fileHashing) return;
+    fileHashing = true;
+    fileError = '';
+    rs.rsJsonApiRequest('/rsFiles/ExtraFileHash', {
+      localpath,
+      period: 86400 * 7,
+      flags: 0,
+    }, (data, success) => {
+      if (success && data && data.retval) {
+        pollFileHash(localpath);
+      } else {
+        fileHashing = false;
+        fileError = 'Failed to start file hashing. Check the full local path.';
+        m.redraw();
+      }
+    });
+  };
+
+  const addInlineImages = (files) => {
+    Array.from(files || []).forEach((file) => {
+      const image = new Image();
+      const objectUrl = URL.createObjectURL(file);
+      image.onload = () => {
+        let width = image.naturalWidth;
+        let height = image.naturalHeight;
+        const scale = Math.min(1, 640 / width, 480 / height);
+        width = Math.max(1, Math.round(width * scale));
+        height = Math.max(1, Math.round(height * scale));
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext('2d');
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, width, height);
+        context.drawImage(image, 0, 0, width, height);
+
+        let quality = .84;
+        let dataUrl = canvas.toDataURL('image/jpeg', quality);
+        while (dataUrl.length > 175000 && (quality > .35 || width > 160 || height > 120)) {
+          if (quality > .35) {
+            quality = Math.max(.35, quality - .08);
+          } else {
+            width = Math.max(160, Math.round(width * .82));
+            height = Math.max(120, Math.round(height * .82));
+            canvas.width = width;
+            canvas.height = height;
+            context.fillStyle = '#ffffff';
+            context.fillRect(0, 0, width, height);
+            context.drawImage(image, 0, 0, width, height);
+          }
+          dataUrl = canvas.toDataURL('image/jpeg', quality);
+        }
+        inlineImages.push({ name: file.name, dataUrl });
+        URL.revokeObjectURL(objectUrl);
+        m.redraw();
+      };
+      image.onerror = () => URL.revokeObjectURL(objectUrl);
+      image.src = objectUrl;
+    });
+  };
+
+  //  The GXS limit is expressed in bytes, not in JS characters: an accent is two
+  //  bytes and an emoji four, while both count as one or two units of .length.
+  //  With an emoji picker one click away, counting characters lets the composer
+  //  accept a message the core then rejects.
+  const byteLength = (value) => new TextEncoder().encode(value).length;
+
+  const postBody = () => {
+    const message = escapeHtml(body).replace(/\r?\n/g, '<br>');
+    const images = inlineImages.map((file) =>
+      `<p><img src="${file.dataUrl}" alt="${escapeHtml(file.name)}" style="max-width:100%;height:auto;border-radius:6px;"></p>`
+    ).join('');
+    const embedded = attachments.map((file) =>
+      `<p><a href="retroshare://file?name=${encodeURIComponent(file.name)}&amp;size=${file.size}&amp;hash=${file.hash}">&#128206; ${escapeHtml(file.name)}</a> (${formatSize(file.size)})</p>`
+    ).join('');
+    return `${message}${images}${embedded}`;
+  };
+
+  const insertEmoji = (emoji) => {
+    body += emoji;
+    showEmojiPicker = false;
+  };
+
   return {
     oninit: (vnode) => {
       if (vnode.attrs.authorId) {
         identity = vnode.attrs.authorId[0];
       }
     },
-    view: (vnode) =>
-      m('.widget', [
-        m('h3', 'Add Thread'),
-        m('hr'),
+    onremove: () => {
+      //  pollFileHash re-arms itself every 500 ms for up to a minute. Closing
+      //  the composer has to stop it, or it keeps hashing and redrawing against
+      //  a component that is no longer on screen.
+      closed = true;
+    },
+    view: (vnode) => {
+      //  Built once per pass: postBody() re-escapes the message and re-joins
+      //  every base64 image, and it was called five times per render, on every
+      //  global redraw, while the user types.
+      const mBody = postBody();
+      const bodySize = byteLength(mBody);
+
+      return m('.widget.forum-thread-composer', [
+        m('.forum-thread-composer__heading', [
+          m('.forum-thread-composer__heading-copy', [
+            m('h3', (vnode.attrs.parent_thread !== '') > 0 ? 'Add Reply' : 'Create New Thread'),
+            m('p', (vnode.attrs.parent_thread !== '') > 0
+              ? 'Write a reply and optionally include images or files.'
+              : 'Start a discussion and optionally include images or files.'),
+          ]),
+          m('button.forum-thread-composer__fullscreen[type=button]', {
+            title: isFullscreen ? 'Restore default size' : 'Fullscreen',
+            'aria-label': isFullscreen ? 'Restore default size' : 'Fullscreen',
+            onclick: (e) => {
+              isFullscreen = !isFullscreen;
+              const modal = e.currentTarget.closest('.modal-content');
+              if (modal) modal.classList.toggle('is-fullscreen', isFullscreen);
+            },
+          }, m(`i.fas.${isFullscreen ? 'fa-compress' : 'fa-expand'}`)),
+        ]),
         (vnode.attrs.parent_thread !== '') > 0
-          ? [m('h5', 'Reply to thread: '), m('p', vnode.attrs.parent_thread)]
+          ? m('.forum-thread-composer__reply', [m('b', 'Replying to: '), vnode.attrs.parent_thread])
           : '',
-        m('input[type=text][placeholder=Title]', {
+        m('input.forum-thread-composer__title[type=text][placeholder=Thread title]', {
+          value: title,
           oninput: (e) => (title = e.target.value),
         }),
-        m('label[for=tags]', 'Select identity'),
-        m(
-          'select[id=idtags]',
-          {
+        m('.forum-thread-composer__field', [
+          m('label[for=forum-thread-identity]', 'Publishing identity'),
+          m('select.config-style-select[id=forum-thread-identity]', {
             value: identity,
             onchange: (e) => {
               identity = vnode.attrs.authorId[e.target.selectedIndex];
             },
-          },
-          [
-            vnode.attrs.authorId &&
-            vnode.attrs.authorId.map((o) =>
-              m(
-                'option',
-                { value: o },
-                rs.userList.username(o) + ' (' + o.slice(0, 8) + '...)'
-              )
-            ),
-          ]
-        ),
-        m('textarea[rows=5]', {
-          style: { width: '90%', display: 'block' },
+          }, vnode.attrs.authorId && vnode.attrs.authorId.map((o) => m(
+            'option',
+            { value: o },
+            Number(o) === 0 ? 'No Signature' : `${rs.userList.username(o)} (${o.slice(0, 8)}...)`
+          ))),
+        ]),
+        m('.forum-thread-composer__editor', [
+          m('textarea[rows=8][placeholder=Write your message...]', {
           oninput: (e) => (body = e.target.value),
           value: body,
-        }),
-        m(
-          'button',
+          }),
+          m('.forum-thread-composer__toolbar', [
+            m('input[type=file][id=forum-thread-files]', {
+              onchange: (e) => {
+                const file = e.target.files && e.target.files[0];
+                if (file) {
+                  const fullPath = file.path;
+                  const hasFullPath = fullPath && (fullPath.includes('/') || fullPath.includes('\\')) && fullPath !== file.name;
+                  filePath = hasFullPath ? fullPath : file.name;
+                  filePathNeedsPrefix = !hasFullPath;
+                  showFilePanel = true;
+                  fileError = '';
+                }
+                e.target.value = '';
+              },
+            }),
+            m('input[type=file][id=forum-thread-images][accept=image/*][multiple]', {
+              onchange: (e) => {
+                addInlineImages(e.target.files);
+                e.target.value = '';
+              },
+            }),
+            m('button.forum-thread-composer__tool[type=button][title=Attach file][aria-label=Attach file]', {
+              class: showFilePanel ? 'active' : '',
+              onclick: () => (showFilePanel = !showFilePanel),
+            }, m('i.fas.fa-paperclip')),
+            m('button.forum-thread-composer__tool[type=button][title=Insert emoji][aria-label=Insert emoji]', {
+              class: showEmojiPicker ? 'active' : '',
+              onclick: () => (showEmojiPicker = !showEmojiPicker),
+            }, m('i.fas.fa-smile')),
+            m('label.forum-thread-composer__tool[for=forum-thread-images][title=Attach images][aria-label=Attach images]',
+              m('i.fas.fa-image')
+            ),
+            showEmojiPicker && m('.forum-thread-composer__emoji-picker', [
+              m('.forum-thread-composer__emoji-categories', chatEmoji.EMOJI_CATEGORIES.map((category) =>
+                m('button[type=button]', {
+                  class: category === emojiCategory ? 'active' : '',
+                  title: category,
+                  onclick: () => (emojiCategory = category),
+                }, chatEmoji.EMOJI_ICONS[category])
+              )),
+              m('.forum-thread-composer__emoji-grid',
+                (chatEmoji.EMOJI_DATA[emojiCategory] || []).map((emoji) =>
+                  m('button[type=button]', { onclick: () => insertEmoji(emoji) }, emoji)
+                )
+              ),
+            ]),
+          ]),
+          showFilePanel && m('.forum-thread-composer__file-panel', [
+            m('div', [
+              m('input[type=text][placeholder=Full local path to file]', {
+                value: filePath,
+                disabled: fileHashing,
+                oninput: (e) => {
+                  filePath = e.target.value;
+                  filePathNeedsPrefix = false;
+                  fileError = '';
+                },
+              }),
+              m('label[for=forum-thread-files][title=Browse for file]', m('i.fas.fa-folder-open')),
+              m('button[type=button]', {
+                disabled: fileHashing || !filePath.trim() || filePathNeedsPrefix,
+                onclick: attachFile,
+              }, fileHashing ? [m('i.fas.fa-spinner.fa-spin'), ' Hashing...'] : 'Attach'),
+            ]),
+            filePathNeedsPrefix && m('small', [
+              'The browser only returned the filename. Add its complete folder path before attaching.',
+            ]),
+            fileError && m('small.error-text', fileError),
+          ]),
+          inlineImages.length > 0 && m('.forum-thread-composer__inline-images',
+            inlineImages.map((file, index) => m('.forum-thread-composer__inline-image', [
+              m('img', { src: file.dataUrl, alt: file.name }),
+              m('button[type=button][title=Remove inline image][aria-label=Remove inline image]', {
+                onclick: () => inlineImages.splice(index, 1),
+              }, m('i.fas.fa-times')),
+            ]))
+          ),
+        ]),
+        attachments.length > 0 && m('.forum-thread-composer__attachments', [
+          m('.forum-thread-composer__attachments-heading', [
+            m('i.fas.fa-paperclip'),
+            m('span', `${attachments.length} attachment${attachments.length === 1 ? '' : 's'}`),
+          ]),
+          m('.forum-thread-composer__attachment-list', attachments.map((file, index) =>
+            m('.forum-thread-composer__attachment', [
+              m('i.fas.fa-file-alt'),
+              m('span', [m('b', file.name), m('small', formatSize(file.size))]),
+              m('button[type=button][title=Remove attachment][aria-label=Remove attachment]', {
+                onclick: () => attachments.splice(index, 1),
+              }, m('i.fas.fa-times')),
+            ])
+          )),
+        ]),
+        m('.forum-thread-composer__capacity', {
+          class: bodySize > MAX_GXS_MESSAGE_SIZE ? 'is-over-limit' : '',
+        }, bodySize > MAX_GXS_MESSAGE_SIZE
+          ? `Message is ${bodySize - MAX_GXS_MESSAGE_SIZE} bytes too large.`
+          : `${MAX_GXS_MESSAGE_SIZE - bodySize} bytes remaining after HTML conversion.`
+        ),
+        m('.forum-thread-composer__actions', m(
+          'button[type=button]',
           {
+            disabled: fileHashing || bodySize > MAX_GXS_MESSAGE_SIZE,
             onclick: async () => {
+              if (!title.trim() || (!body.trim() && attachments.length === 0 && inlineImages.length === 0)) return;
+              //  Rebuilt here rather than reused from the render: what is sent
+              //  must be what the fields hold at the click, not what they held
+              //  when the button was last drawn.
+              const mBody = postBody();
+              if (byteLength(mBody) > MAX_GXS_MESSAGE_SIZE) return;
               const res =
                 (vnode.attrs.parent_thread !== '') > 0 // is it a reply or a new thread
                   ? await rs.rsJsonApiRequest('/rsgxsforums/createPost', {
                     forumId: vnode.attrs.forumId,
-                    mBody: body,
+                    mBody,
                     title,
                     authorId: identity,
                     parentId: vnode.attrs.parentId,
                   })
                   : await rs.rsJsonApiRequest('/rsgxsforums/createPost', {
                     forumId: vnode.attrs.forumId,
-                    mBody: body,
+                    mBody,
                     title,
                     authorId: identity,
                   });
@@ -14195,9 +14763,10 @@ const AddThread = () => {
               m.redraw();
             },
           },
-          'Add'
-        ),
-      ]),
+          (vnode.attrs.parent_thread !== '') > 0 ? 'Add Reply' : 'Create Thread'
+        )),
+      ]);
+    },
   };
 };
 
@@ -14224,7 +14793,7 @@ const ThreadView = () => {
       const threadStruct = (util.Data.Threads[forumId] && util.Data.Threads[forumId][msgId]) ? util.Data.Threads[forumId][msgId] : null;
 
       if (!threadStruct) {
-        return m('.widget', [
+        return m('.forum-thread-view', [
           m(
             'a[title=Back]',
             {
@@ -14242,7 +14811,7 @@ const ThreadView = () => {
       const meta = threadStruct.thread.mMeta;
       const unread = meta.mMsgStatus === util.THREAD_UNREAD;
 
-      return m('.widget', { key: msgId }, [
+      return m('.forum-thread-view', { key: msgId }, [
         m(
           'a[title=Back]',
           {
@@ -14267,7 +14836,7 @@ const ThreadView = () => {
               forumId,
               authorId: ownId,
               parentId: msgId,
-            }))
+            }), 'create-forum-thread-modal')
           }, 'Reply'),
           m('button', {
             onclick: async () => {
@@ -14282,7 +14851,7 @@ const ThreadView = () => {
             }
           }, unread ? 'Mark Read' : 'Mark Unread'),
         ]),
-        m('div.content', {
+        m('div.forum-post-content', {
           style: {
             width: '100%',
             backgroundColor: '#f9f9f9',
@@ -14331,12 +14900,14 @@ const ForumView = () => {
       const fsubscribed = forumDetails.isSubscribed;
       const createDate = forumDetails.created;
       const lastActivity = forumDetails.activity;
+      //  userMap holds {name, isContact} objects, so it must not be read
+      //  directly into the view: username() is what turns an id into a string.
       let fauthor = 'Unknown';
 
-      if (rs.userList.userMap[forumDetails.author]) {
-        fauthor = rs.userList.userMap[forumDetails.author];
-      } else if (Number(forumDetails.author) === 0) {
+      if (Number(forumDetails.author) === 0) {
         fauthor = 'No Contact Author';
+      } else if (forumDetails.author) {
+        fauthor = rs.userList.username(forumDetails.author);
       }
 
       return [
@@ -14351,61 +14922,63 @@ const ForumView = () => {
           m('i.fas.fa-arrow-left')
         ),
 
-        m('h3', fname),
-        m(
-          'button',
-          {
-            onclick: async () => {
-              const res = await rs.rsJsonApiRequest('/rsgxsforums/subscribeToForum', {
-                forumId: v.attrs.id,
-                subscribe: !fsubscribed,
-              });
-              if (res.body.retval) {
-                util.Data.DisplayForums[v.attrs.id].isSubscribed = !fsubscribed;
-              }
-            },
-          },
-          fsubscribed ? 'Subscribed' : 'Subscribe'
-        ),
-        m('[id=forumdetails]', [
-          m(
-            'p',
-            m('b', 'Date created: '),
-            formatTimestamp(createDate)
-          ),
-          m('p', m('b', 'Admin: '), fauthor),
-          m(
-            'p',
-            m('b', 'Last activity: '),
-            formatTimestamp(lastActivity)
-          ),
-        ]),
-        m('hr'),
-        m('forumdesc', m('b', 'Description: '), forumDetails.description),
-        m('hr'),
-        m(
-          'threaddetails',
-          {
-            style: 'display:' + (fsubscribed ? 'block' : 'none'),
-          },
-          m('h3', 'Threads'),
+        m('.widget__heading.forum-detail-heading', [
+          m('h3', fname),
           m(
             'button',
             {
-              onclick: () => {
-                util.popupmessage(
-                  m(AddThread, {
-                    parent_thread: '',
-                    forumId: v.attrs.id,
-                    authorId: ownId,
-                    parentId: '',
-                  })
-                );
+              onclick: async () => {
+                const res = await rs.rsJsonApiRequest('/rsgxsforums/subscribeToForum', {
+                  forumId: v.attrs.id,
+                  subscribe: !fsubscribed,
+                });
+                if (res.body.retval) {
+                  util.Data.DisplayForums[v.attrs.id].isSubscribed = !fsubscribed;
+                }
               },
             },
-            ['New Thread', m('i.fas.fa-pencil-alt')]
+            fsubscribed ? 'Subscribed' : 'Subscribe'
           ),
-          m('hr'),
+        ]),
+        m('.forum-detail-card', [
+          m('.forum-detail-card__icon[role=img][aria-label=Forum]',
+            m('i.fas.fa-bullhorn')
+          ),
+          m('.forum-detail-card__details', [
+            m('div', [m('b', 'Date created: '), m('span', formatTimestamp(createDate))]),
+            m('div', [m('b', 'Admin: '), m('span', fauthor)]),
+            m('div', [m('b', 'Last activity: '), m('span', formatTimestamp(lastActivity))]),
+          ]),
+          m('.forum-detail-card__description', [
+            m('b', 'Description: '),
+            m('span', forumDetails.description || 'No Description'),
+          ]),
+        ]),
+        m(
+          'threaddetails.forum-threads',
+          {
+            style: 'display:' + (fsubscribed ? 'block' : 'none'),
+          },
+          m('.forum-threads__heading', [
+            m('h3', 'Threads'),
+            m(
+              'button.forum-threads__create[type=button][title=New Thread][aria-label=New Thread]',
+              {
+                onclick: () => {
+                  util.popupmessage(
+                    m(AddThread, {
+                      parent_thread: '',
+                      forumId: v.attrs.id,
+                      authorId: ownId,
+                      parentId: '',
+                    }),
+                    'create-forum-thread-modal'
+                  );
+                },
+              },
+              [m('i.fas.fa-pencil-alt'), m('span', 'New Thread')]
+            ),
+          ]),
           m(
             util.ThreadsTable,
             m(
@@ -14642,8 +15215,10 @@ const rs = require('rswebui');
 const widget = require('widgets');
 const peopleUtil = require('people/people_util');
 const chatEmoji = require('chat/chat_emoji');
+const renderIdentityTooltip = require('mail/mail_identity_tooltip');
 
 const UserAvatarsCache = {};
+const RecipientDetailsCache = {};
 const MAX_RECIPIENTS = 20;
 
 function formatFileSize(bytes) {
@@ -14662,6 +15237,39 @@ const Layout = () => {
   let showEmojiPicker = false;
   let emojiSearch = '';
   let emojiCategory = 'Smileys';
+  let hoveredRecipient = null;
+
+  function showRecipientTooltip(item, element) {
+    hoveredRecipient = {
+      id: item.mGroupId,
+      name: item.mGroupName,
+      rect: element.getBoundingClientRect(),
+    };
+
+    if (!RecipientDetailsCache[item.mGroupId]) {
+      rs.rsJsonApiRequest('/rsIdentity/getIdDetails', { id: item.mGroupId }, (data) => {
+        if (data && data.details) {
+          RecipientDetailsCache[item.mGroupId] = data.details;
+          UserAvatarsCache[item.mGroupId] = data.details.mAvatar;
+          m.redraw();
+        }
+      });
+    }
+  }
+
+  function renderRecipientTooltip() {
+    if (!hoveredRecipient) return null;
+    const details = RecipientDetailsCache[hoveredRecipient.id];
+    if (!details) return null;
+
+    return renderIdentityTooltip({
+      details,
+      gxsId: hoveredRecipient.id,
+      name: hoveredRecipient.name,
+      rect: hoveredRecipient.rect,
+      overlapAnchor: true,
+    });
+  }
 
   const Data = {
     allUsers: [],
@@ -15127,13 +15735,21 @@ const Layout = () => {
                   m('input[type=text].recipients__input-field', {
                     value: Data.recipients.to.inputVal,
                     oninput: (e) => handleInput(e, 'to'),
-                    placeholder: totalRecipients() >= MAX_RECIPIENTS ? 'Max recipients reached' : '',
+                    placeholder: totalRecipients() >= MAX_RECIPIENTS
+                      ? 'Max recipients reached'
+                      : Data.recipients.to.sendList.length === 0
+                        ? 'Recipients'
+                        : '',
                     disabled: totalRecipients() >= MAX_RECIPIENTS,
                   }),
                   m('ul.recipients__input-list[autocomplete=off]', [
                     Data.recipients.to.inputList.length > 0
                       ? Data.recipients.to.inputList.map((item) =>
-                          m('li', { onclick: () => handleClick(item, 'to') }, item.mGroupName)
+                          m('li', {
+                            onclick: () => handleClick(item, 'to'),
+                            onmouseenter: (event) => showRecipientTooltip(item, event.currentTarget),
+                            onmouseleave: () => (hoveredRecipient = null),
+                          }, item.mGroupName)
                         )
                       : m('li', 'No Item'),
                   ]),
@@ -15191,7 +15807,11 @@ const Layout = () => {
                         ? Data.recipients[recipientType].inputList.map((item) =>
                             m(
                               'li',
-                              { onclick: () => handleClick(item, recipientType) },
+                              {
+                                onclick: () => handleClick(item, recipientType),
+                                onmouseenter: (event) => showRecipientTooltip(item, event.currentTarget),
+                                onmouseleave: () => (hoveredRecipient = null),
+                              },
                               item.mGroupName
                             )
                           )
@@ -15204,6 +15824,7 @@ const Layout = () => {
             totalRecipients() >= MAX_RECIPIENTS && m('.compose-mail__recipient-limit', {
               style: { color: '#e67e22', fontSize: '0.85rem', padding: '0.25rem 0' }
             }, `Maximum of ${MAX_RECIPIENTS} recipients reached. Remove a recipient to add more.`),
+            renderRecipientTooltip(),
           ]),
           m('input.compose-mail__subject[type=text][placeholder=Subject]', {
             value: Data.subject,
@@ -15404,6 +16025,56 @@ const Layout = () => {
 };
 
 module.exports = Layout;
+ 
+}); 
+require.register("mail/mail_identity_tooltip", function(exports, require, module) { 
+const m = require('mithril');
+const rs = require('rswebui');
+const peopleUtil = require('people/people_util');
+
+function renderIdentityTooltip({ details, gxsId, name, rect, overlapAnchor = false }) {
+  if (!details || !rect) return null;
+
+  const avatar = details.mAvatar && details.mAvatar.base64 ? details.mAvatar.base64 : details.mAvatar;
+  const votes = details.mReputation
+    ? (details.mReputation.mFriendsPositiveVotes || 0) -
+      (details.mReputation.mFriendsNegativeVotes || 0)
+    : 0;
+  const tooltipWidth = 280;
+  const gap = 10;
+  let left = overlapAnchor ? rect.left + 90 : rect.right + gap;
+  if (left + tooltipWidth > window.innerWidth - gap) left = rect.left - tooltipWidth - gap;
+  if (left < gap) left = gap;
+  let top = overlapAnchor ? rect.top - 10 : rect.top;
+  if (top + 160 > window.innerHeight) top = window.innerHeight - 170;
+  if (top < gap) top = gap;
+
+  return m('.user-tooltip', { style: { top: `${top}px`, left: `${left}px` } }, [
+    m('.tooltip-avatar', m(peopleUtil.UserAvatar, {
+      avatar,
+      firstLetter: (name || '?').slice(0, 1).toUpperCase(),
+      identityId: gxsId,
+      size: 56,
+      isSquare: true,
+    })),
+    m('.tooltip-details', [
+      m('.tooltip-row', [m('span.tooltip-label', 'Identity name: '), m('span.tooltip-value', name)]),
+      m('.tooltip-row', [m('span.tooltip-label', 'Identity Id: '), m('span.tooltip-value.tooltip-id', gxsId)]),
+      details.mPgpId && details.mPgpId !== '0000000000000000' && m('.tooltip-row', [
+        m('span.tooltip-label', 'Node: '),
+        m('span.tooltip-value', `${rs.userList.username(details.mPgpId) || name} [${details.mPgpId}]`),
+      ]),
+      m('.tooltip-row', [
+        m('span.tooltip-label', 'Votes: '),
+        m('span.tooltip-value', {
+          style: { color: votes >= 0 ? '#008000' : '#cc0000', fontWeight: 'bold' },
+        }, `${votes >= 0 ? '+' : ''}${votes}`),
+      ]),
+    ]),
+  ]);
+}
+
+module.exports = renderIdentityTooltip;
  
 }); 
 require.register("mail/mail_important", function(exports, require, module) { 
@@ -16031,6 +16702,7 @@ const util = require('files/files_util');
 const widget = require('widgets');
 const peopleUtil = require('people/people_util');
 const compose = require('mail/mail_compose');
+const renderIdentityTooltip = require('mail/mail_identity_tooltip');
 
 // rsmail.h
 const RS_MSG_BOXMASK = 0x000f;
@@ -16074,43 +16746,12 @@ function renderMailUserTooltip() {
   const details = MailGxsDetailsCache[hUser.gxsId];
   if (!details) return null;
 
-  const avatar = details.mAvatar && details.mAvatar.base64 ? details.mAvatar.base64 : null;
-  const firstLetter = (hUser.name || '?').slice(0, 1).toUpperCase();
-  const votes = details.mReputation
-    ? ((details.mReputation.mFriendsPositiveVotes || 0) - (details.mReputation.mFriendsNegativeVotes || 0))
-    : 0;
-
-  const rect = hUser.rect;
-  const top = rect ? Math.max(10, Math.min(rect.bottom + 4, window.innerHeight - 185)) : 100;
-  const left = rect ? Math.min(Math.max(rect.left, 20), window.innerWidth - 300) : 100;
-
-  return m('.user-tooltip', {
-    style: {
-      position: 'fixed',
-      top: `${top}px`,
-      left: `${left}px`,
-      zIndex: 10000,
-    }
-  }, [
-    m('.tooltip-avatar', m(peopleUtil.UserAvatar, { avatar, firstLetter, identityId: hUser.gxsId, size: 64, isSquare: true })),
-    m('.tooltip-details', [
-      m('.tooltip-row', [m('span.tooltip-label', 'Identity name: '), m('span.tooltip-value', hUser.name)]),
-      m('.tooltip-row', [m('span.tooltip-label', 'Identity Id: '), m('span.tooltip-value.tooltip-id', hUser.gxsId)]),
-      details.mPgpId && details.mPgpId !== '0000000000000000' && m('.tooltip-row', [
-        m('span.tooltip-label', 'Node: '),
-        m('span.tooltip-value', `${rs.userList.username(details.mPgpId) || hUser.name} [${details.mPgpId}]`)
-      ]),
-      m('.tooltip-row', [
-        m('span.tooltip-label', 'Votes: '),
-        m('span.tooltip-value', {
-          style: {
-            color: votes >= 0 ? '#008000' : '#cc0000',
-            fontWeight: 'bold'
-          }
-        }, (votes >= 0 ? '+' : '') + votes)
-      ])
-    ])
-  ]);
+  return renderIdentityTooltip({
+    details,
+    gxsId: hUser.gxsId,
+    name: hUser.name,
+    rect: hUser.rect,
+  });
 }
 
 const tagTypesCache = {};
@@ -16914,6 +17555,7 @@ const {
 const { OwnProfileCard, FriendsList } = require('network/network_friends_list');
 const DetailsTab = require('network/network_details_tab');
 const ChatTab = require('network/network_chat_tab');
+const NetworkGraph = require('network/network_graph');
 
 const NetworkLayout = () => {
   return {
@@ -16946,9 +17588,7 @@ const NetworkLayout = () => {
       return m('.network-container', [
         m('.network-left-pane', [m(OwnProfileCard), m(FriendsList)]),
         m('.network-right-pane', [
-          selectedFriend
-            ? [
-                m('.network-tabs', [
+          m('.network-tabs', [
                   m(
                     'button.tab-btn' + (State.activeTab === 'details' ? '.active' : ''),
                     {
@@ -16971,16 +17611,23 @@ const NetworkLayout = () => {
                     },
                     'Chat Conversation'
                   ),
-                ]),
-                m('.network-tab-content', [
+                  m(
+                    'button.tab-btn' + (State.activeTab === 'graph' ? '.active' : ''),
+                    { onclick: () => { State.activeTab = 'graph'; } },
+                    [m('i.fas.fa-project-diagram'), ' Network Graph']
+                  ),
+          ]),
+          State.activeTab === 'graph'
+            ? m('.network-tab-content.network-graph-tab', m(NetworkGraph))
+            : selectedFriend
+              ? m('.network-tab-content', [
                   State.activeTab === 'details' ? m(DetailsTab) : m(ChatTab),
-                ]),
-              ]
-            : m('.network-pane-placeholder', [
+                ])
+              : m('.network-pane-placeholder', [
                 m('i.fas.fa-network-wired'),
                 m(
                   'p',
-                  'Select a friend node from the left side panel to view locations details or start a private chat.'
+                  'Select a friend for details or chat, or open the Network Graph tab.'
                 ),
               ]),
         ]),
@@ -17505,11 +18152,13 @@ Data.refreshGpgDetails = async function () {
                     statusValue,
                     statusTimestamp,
                     avatar,
+                    peerDetails: data,
                   };
 
                   if (details[gpgId] === undefined) {
                     details[gpgId] = {
                       name: data.name,
+                      fingerprint: data.fpr || '',
                       isSearched: true,
                       isOnline,
                       locations: [loc],
@@ -17520,6 +18169,9 @@ Data.refreshGpgDetails = async function () {
                     };
                   } else {
                     details[gpgId].locations.push(loc);
+                    if (!details[gpgId].fingerprint && data.fpr) {
+                      details[gpgId].fingerprint = data.fpr;
+                    }
                     if (avatar) {
                       details[gpgId].avatar = avatar;
                     }
@@ -17551,6 +18203,13 @@ const Data = require('network/network_data');
 const peopleUtil = require('people/people_util');
 const { State, startDirectChat, getOnlineSslId } = require('network/network_state');
 
+function formatFingerprint(fingerprint) {
+  return String(fingerprint || '')
+    .replace(/\s/g, '')
+    .match(/.{1,4}/g)
+    ?.join(' ') || '';
+}
+
 const ConfirmRemove = () => {
   return {
     view: (vnode) => [
@@ -17575,6 +18234,108 @@ const ConfirmRemove = () => {
   };
 };
 
+//  Version and short invite of a node do not change while the web UI is open,
+//  and the dialog is reopened often. Cached by node id so that reopening it
+//  paints filled in, instead of showing "Loading..." and asking the core again.
+const locationDetailsCache = {};
+
+const LocationDetails = () => {
+  let activeTab = 'details';
+  let version = 'Loading...';
+  let retroshareId = 'Loading...';
+
+  return {
+    oninit: (vnode) => {
+      const nodeId = vnode.attrs.loc.id;
+      const cached = locationDetailsCache[nodeId];
+      if (cached) {
+        version = cached.version;
+        retroshareId = cached.retroshareId;
+        return;
+      }
+      locationDetailsCache[nodeId] = { version, retroshareId };
+
+      //  rsJsonApiRequest never rejects: it resolves undefined when the request
+      //  fails, so the failure has to be read off the resolved value rather than
+      //  waited for in a catch.
+      rs.rsJsonApiRequest('/rsGossipDiscovery/getPeerVersion', { id: nodeId })
+        .then((response) => {
+          version = response && response.body && response.body.retval
+            ? response.body.version || 'Unknown'
+            : 'Unavailable';
+          locationDetailsCache[nodeId].version = version;
+          m.redraw();
+        });
+      rs.rsJsonApiRequest('/rsPeers/getShortInvite', { sslId: nodeId })
+        .then((response) => {
+          retroshareId = response && response.body && response.body.retval
+            ? rs.cleanRetroshareId(response.body.invite) || 'Unavailable'
+            : 'Unavailable';
+          locationDetailsCache[nodeId].retroshareId = retroshareId;
+          m.redraw();
+        });
+    },
+    view: (vnode) => {
+      const loc = vnode.attrs.loc;
+      const detail = loc.peerDetails || {};
+      const status = Data.getStatusPresentation(loc.statusValue, loc.isOnline);
+      const knownAddresses = detail.ipAddressList || [];
+      const infoRow = (label, value) => [
+        m('.info-label', label),
+        m('.info-value', value || 'None'),
+      ];
+
+      const detailContent = m('.info-grid', [
+        infoRow('Profile', `${detail.name || 'Unknown'} (${loc.gpg_id})`),
+        infoRow('Node ID', loc.id),
+        infoRow('Node Name', loc.name),
+        infoRow('Status', status.label),
+        infoRow('Connection', detail.connectStateString || status.label),
+        infoRow('Last Contact', new Date(loc.lastSeen * 1000).toLocaleString()),
+        infoRow('RetroShare Version', version),
+        infoRow('Status Message', loc.customState || 'None'),
+      ]);
+      const connectivityContent = [
+        m('.info-grid', detail.isHiddenNode ? [
+          infoRow('Hidden Address', detail.hiddenNodeAddress),
+          infoRow('Port', detail.hiddenNodePort),
+        ] : [
+          infoRow('Local Address', detail.localAddr),
+          infoRow('Local Port', detail.localPort),
+          infoRow('External Address', detail.extAddr),
+          infoRow('External Port', detail.extPort),
+          infoRow('Dynamic DNS', detail.dyndns),
+        ]),
+        m('h4', `Known Addresses (${knownAddresses.length})`),
+        knownAddresses.length
+          ? m('pre.known-addresses-list', knownAddresses.join('\n'))
+          : m('p', 'No address history available.'),
+      ];
+      const tabs = [
+        ['details', 'Details'],
+        ['connectivity', 'Connectivity'],
+        ['retroshare-id', 'RetroShare ID'],
+      ];
+
+      return m('.location-details-dialog', [
+        m('h3', `${detail.name || 'Profile'} (${loc.name || 'Location'})`),
+        m('.network-tabs.location-detail-tabs', tabs.map(([id, label]) => m(
+          `button.tab-btn${activeTab === id ? '.active' : ''}`,
+          { onclick: () => (activeTab = id) },
+          label
+        ))),
+        m('.location-detail-content',
+          activeTab === 'details'
+            ? detailContent
+            : activeTab === 'connectivity'
+              ? connectivityContent
+              : m('pre.retroshare-id-text', retroshareId)
+        ),
+      ]);
+    },
+  };
+};
+
 const DetailsTab = () => {
   return {
     view: () => {
@@ -17584,6 +18345,7 @@ const DetailsTab = () => {
 
       const friendGxsId = State.gpgToGxsIdMap[gpgId.toLowerCase()];
       const status = Data.getStatusPresentation(friend.statusValue, friend.isOnline);
+      const fingerprint = formatFingerprint(friend.fingerprint);
 
       return m('.network-detail-view', [
         m('.detail-header', [
@@ -17647,6 +18409,8 @@ const DetailsTab = () => {
             ] : null,
             m('.info-label', 'Node GPG Key'),
             m('.info-value', gpgId),
+            m('.info-label', 'PGP Fingerprint'),
+            m('.info-value', fingerprint || 'Unavailable'),
           ]),
         ]),
 
@@ -17676,6 +18440,16 @@ const DetailsTab = () => {
                 ]),
                 m('.loc-footer', [
                   m(
+                    'button',
+                    {
+                      onclick: () => widget.popupMessage(
+                        m(LocationDetails, { loc }),
+                        'location-details-modal'
+                      ),
+                    },
+                    [m('i.fas.fa-info-circle'), ' View Details']
+                  ),
+                  m(
                     'button.red',
                     {
                       onclick: () =>
@@ -17704,7 +18478,13 @@ require.register("network/network_friends_list", function(exports, require, modu
 const m = require('mithril');
 const Data = require('network/network_data');
 const peopleUtil = require('people/people_util');
-const { State, startDirectChat, getOnlineSslId } = require('network/network_state');
+const {
+  State,
+  startDirectChat,
+  getOnlineSslId,
+  setOwnCustomStateString,
+  setOwnStatus,
+} = require('network/network_state');
 
 function formatRelativeTime(ts) {
   if (!ts) return '';
@@ -17717,6 +18497,10 @@ function formatRelativeTime(ts) {
 }
 
 const OwnProfileCard = () => {
+  let isEditing = false;
+  let isPresenceMenuOpen = false;
+  let statusInputText = '';
+
   return {
     view: () => {
       const avatar = State.ownProfile.avatar ? { mData: { base64: State.ownProfile.avatar } } : undefined;
@@ -17728,24 +18512,89 @@ const OwnProfileCard = () => {
 
       return m('.own-profile-card', [
         m('.profile-header', [
-          m(peopleUtil.UserAvatar, { avatar, firstLetter, seed: State.ownProfile.name }),
+          m('.profile-avatar-wrapper', [
+            m(peopleUtil.UserAvatar, { avatar, firstLetter, seed: State.ownProfile.name }),
+            m('button.status-dot.profile-status-button', {
+              'aria-label': `Change status. Current status: ${status.label}`,
+              'aria-expanded': String(isPresenceMenuOpen),
+              style: { backgroundColor: status.color },
+              title: `Status: ${status.label}. Click to change.`,
+              onclick: () => {
+                isPresenceMenuOpen = !isPresenceMenuOpen;
+              },
+            }),
+            isPresenceMenuOpen && m('.profile-presence-menu', [
+              [
+                { value: 3, label: 'Online' },
+                { value: 1, label: 'Away' },
+                { value: 2, label: 'Busy' },
+              ].map((option) => {
+                const optionStatus = Data.getStatusPresentation(option.value, true);
+                return m('button.profile-presence-option', {
+                  class: status.value === option.value ? 'active' : '',
+                  onclick: () => {
+                    setOwnStatus(option.value);
+                    isPresenceMenuOpen = false;
+                  },
+                }, [
+                  m('span', { style: { backgroundColor: optionStatus.color } }),
+                  option.label,
+                  status.value === option.value && m('i.fas.fa-check'),
+                ]);
+              }),
+            ]),
+          ]),
           m('.profile-info', [
             m('.profile-name', { title: displayName }, displayName),
-            m('.profile-status', {
-              style: {
-                color: status.color,
-                '--profile-status-color': status.color,
-              },
-            }, status.label),
-            State.ownProfile.customState &&
-              m(
-                '.profile-custom-status',
-                {
-                  style: 'font-size: 0.8rem; color: #94a3b8; font-style: italic; margin-top: 2px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; max-width: 150px;',
-                  title: State.ownProfile.customState,
-                },
-                State.ownProfile.customState
-              ),
+            isEditing
+              ? m('.profile-custom-status-edit', {
+                  style: 'display: flex; align-items: center; gap: 4px; margin-top: 3px;'
+                }, [
+                  m('input[type=text]', {
+                    value: statusInputText,
+                    placeholder: 'Set custom status...',
+                    style: 'font-size: 0.8rem; padding: 2px 6px; border: 1px solid #3ba4d7; border-radius: 4px; width: 125px; outline: none; background: #ffffff;',
+                    oninput: (e) => { statusInputText = e.target.value; },
+                    onkeydown: (e) => {
+                      if (e.key === 'Enter') {
+                        setOwnCustomStateString(statusInputText);
+                        isEditing = false;
+                      } else if (e.key === 'Escape') {
+                        isEditing = false;
+                      }
+                    },
+                    oncreate: (vnode) => vnode.dom.focus(),
+                  }),
+                  m('i.fas.fa-check', {
+                    style: 'cursor: pointer; color: #10b981; font-size: 0.85rem; padding: 2px;',
+                    title: 'Save status',
+                    onclick: () => {
+                      setOwnCustomStateString(statusInputText);
+                      isEditing = false;
+                    },
+                  }),
+                  m('i.fas.fa-times', {
+                    style: 'cursor: pointer; color: #ef4444; font-size: 0.85rem; padding: 2px;',
+                    title: 'Cancel',
+                    onclick: () => {
+                      isEditing = false;
+                    },
+                  }),
+                ])
+              : m(
+                  '.profile-custom-status',
+                  {
+                    style: State.ownProfile.customState
+                      ? 'font-size: 0.825rem; color: #64748b; font-style: italic; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; max-width: 180px; cursor: pointer; margin-top: 2px;'
+                      : 'font-size: 0.825rem; color: #94a3b8; font-style: italic; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; max-width: 180px; cursor: pointer; margin-top: 2px;',
+                    title: 'Edit status message',
+                    onclick: () => {
+                      statusInputText = State.ownProfile.customState || '';
+                      isEditing = true;
+                    },
+                  },
+                  State.ownProfile.customState || 'Set custom status...'
+                ),
           ]),
         ]),
       ]);
@@ -17768,7 +18617,7 @@ const FriendsList = () => {
         }
       });
 
-      let displayFriends = [];
+      let displayFriends;
 
       if (State.mainTab === 'network') {
         displayFriends = allGpgEntries.filter(([gpgId, friend]) =>
@@ -17846,6 +18695,8 @@ const FriendsList = () => {
                 const hist = State.chatHistoryMap && State.chatHistoryMap[gpgId];
                 const status = Data.getStatusPresentation(friend.statusValue, friend.isOnline);
 
+                const isOnlineOrActive = friend.isOnline || (status && status.value > 0);
+
                 if (State.mainTab === 'chats') {
                   // Render Chat List Item
                   return m(
@@ -17870,7 +18721,13 @@ const FriendsList = () => {
                         }),
                       ]),
                       m('.chat-info', [
-                        m('.chat-name', friend.name),
+                        m(
+                          '.chat-name',
+                          {
+                            style: isOnlineOrActive ? { color: status.color, fontWeight: '700' } : {},
+                          },
+                          friend.name
+                        ),
                         m('.chat-last-msg', hist ? hist.lastMsg : ''),
                       ]),
                       m('.chat-meta', [
@@ -17896,16 +18753,27 @@ const FriendsList = () => {
                     },
                   },
                   [
-                    m('.friend-avatar', m(peopleUtil.UserAvatar, { avatar, firstLetter, seed: gpgId })),
+                    m('.friend-avatar', [
+                      m(peopleUtil.UserAvatar, { avatar, firstLetter, seed: gpgId }),
+                      m('.status-dot', {
+                        style: { backgroundColor: status.color },
+                        title: status.label,
+                      }),
+                    ]),
                     m('.friend-meta', [
-                      m('.friend-name', friend.name),
-                      m('.friend-status', { style: { color: status.color } }, status.label),
+                      m(
+                        '.friend-name',
+                        {
+                          style: isOnlineOrActive ? { color: status.color, fontWeight: '700' } : {},
+                        },
+                        friend.name
+                      ),
                       friend.customState &&
                         m(
                           '.friend-custom-status',
                           {
                             style:
-                              'font-size: 0.85rem; color: #64748b; margin-top: 2px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; max-width: 160px;',
+                              'font-size: 0.85rem; color: #64748b; margin-top: 2px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; max-width: 180px;',
                             title: friend.customState,
                           },
                           friend.customState
@@ -17924,6 +18792,346 @@ module.exports = {
   OwnProfileCard,
   FriendsList,
 };
+ 
+}); 
+require.register("network/network_graph", function(exports, require, module) { 
+const m = require('mithril');
+const rs = require('rswebui');
+const Data = require('network/network_data');
+const { State } = require('network/network_state');
+
+const WIDTH = 1000;
+const HEIGHT = 650;
+const NODE_LIMIT = 200;
+
+function friendIdsFrom(response) {
+  const body = (response && response.body) || {};
+  const values = body.gpg_friends || body.gpgFriends || body.friends ||
+    (Array.isArray(body.retval) ? body.retval : []);
+  return Array.isArray(values) ? values.map(String).filter(Boolean) : [];
+}
+
+function uniqueEdgeKey(a, b) {
+  return [a, b].sort().join('|');
+}
+
+function initialPosition(index, count, level) {
+  if (level === 0) return { x: WIDTH / 2, y: HEIGHT / 2 };
+  const angle = (index / Math.max(count, 1)) * Math.PI * 2;
+  const radius = level === 1 ? 190 : 285;
+  return {
+    x: WIDTH / 2 + Math.cos(angle) * radius,
+    y: HEIGHT / 2 + Math.sin(angle) * radius,
+  };
+}
+
+function layoutGraph(nodes, edges, edgeLength) {
+  const positions = {};
+  const byLevel = [0, 1, 2].map((level) => nodes.filter((node) => node.level === level));
+  byLevel.forEach((levelNodes, level) => {
+    levelNodes.forEach((node, index) => {
+      positions[node.id] = initialPosition(index, levelNodes.length, level);
+    });
+  });
+
+  const own = nodes.find((node) => node.level === 0);
+  for (let iteration = 0; iteration < 140; iteration++) {
+    const force = Object.fromEntries(nodes.map((node) => [node.id, { x: 0, y: 0 }]));
+
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = positions[nodes[i].id];
+        const b = positions[nodes[j].id];
+        let dx = a.x - b.x;
+        let dy = a.y - b.y;
+        const distanceSq = Math.max(dx * dx + dy * dy, 100);
+        const distance = Math.sqrt(distanceSq);
+        const strength = 2400 / distanceSq;
+        dx /= distance;
+        dy /= distance;
+        force[nodes[i].id].x += dx * strength;
+        force[nodes[i].id].y += dy * strength;
+        force[nodes[j].id].x -= dx * strength;
+        force[nodes[j].id].y -= dy * strength;
+      }
+    }
+
+    edges.forEach((edge) => {
+      const a = positions[edge.source];
+      const b = positions[edge.target];
+      if (!a || !b) return;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const distance = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
+      const strength = (distance - edgeLength) * 0.012;
+      force[edge.source].x += (dx / distance) * strength;
+      force[edge.source].y += (dy / distance) * strength;
+      force[edge.target].x -= (dx / distance) * strength;
+      force[edge.target].y -= (dy / distance) * strength;
+    });
+
+    nodes.forEach((node) => {
+      if (own && node.id === own.id) return;
+      const position = positions[node.id];
+      position.x = Math.max(35, Math.min(WIDTH - 35, position.x + force[node.id].x));
+      position.y = Math.max(35, Math.min(HEIGHT - 35, position.y + force[node.id].y));
+    });
+  }
+  return positions;
+}
+
+//  Module level, not fields of the component: the graph tab is mounted only
+//  while it is the active tab, so leaving it and coming back rebuilds the
+//  component. Kept here, a return to the tab shows the graph that was already
+//  computed -- instead of replaying the discovery requests and a layout that
+//  costs up to 729 ms -- and the zoom, the search and the level are still what
+//  the user left them at.
+let nodes = [];
+let edges = [];
+let positions = {};
+let loading = true;
+let error = '';
+let friendshipLevel = 1;
+let edgeLength = 105;
+let zoom = 1;
+let search = '';
+let loadedAt = 0;
+//  A newer load makes an older one drop its results instead of writing them
+//  over the fresh ones: changing the friendship level while a load is running
+//  starts a second one, and they do not necessarily finish in order.
+let loadToken = 0;
+const GRAPH_CACHE_MS = 60000;
+
+const NetworkGraph = () => {
+  let draggedId = null;
+
+  async function discoveredFriends(id) {
+    try {
+      return friendIdsFrom(
+        await rs.rsJsonApiRequest('/rsGossipDiscovery/getDiscPgpFriends', { pgpid: id })
+      );
+    } catch (_) {
+      return [];
+    }
+  }
+
+  //  A browser opens about six connections per host: asking for two hundred
+  //  discoveries at once does not make them arrive sooner, it just queues them
+  //  all in the tab and, past a certain point, starts failing them outright --
+  //  the request storm that made the channel list unusable. Six at a time.
+  async function discoverInBatches(ids, size = 6) {
+    const relations = [];
+    for (let i = 0; i < ids.length; i += size) {
+      const slice = ids.slice(i, i + size);
+      relations.push(...await Promise.all(
+        slice.map(async (id) => [id, await discoveredFriends(id)])
+      ));
+    }
+    return relations;
+  }
+
+  async function loadGraph() {
+    const token = ++loadToken;
+    loading = true;
+    error = '';
+    const ownId = State.ownProfile.gpg_id;
+    if (!ownId) {
+      loading = false;
+      error = 'Your network identity is still loading. Try redraw in a moment.';
+      m.redraw();
+      return;
+    }
+
+    const directIds = Object.keys(Data.gpgDetails || {}).filter(Boolean);
+    const levels = new Map([[ownId, 0]]);
+    directIds.forEach((id) => levels.set(id, 1));
+    const adjacency = new Map([[ownId, directIds]]);
+
+    const directRelations = await discoverInBatches(directIds);
+    if (token !== loadToken) return;
+    directRelations.forEach(([id, friends]) => {
+      adjacency.set(id, friends);
+      if (friendshipLevel > 1) {
+        friends.forEach((friendId) => {
+          if (!levels.has(friendId) && levels.size < NODE_LIMIT) levels.set(friendId, 2);
+        });
+      }
+    });
+
+    if (friendshipLevel > 1) {
+      const secondLevelIds = Array.from(levels).filter(([, level]) => level === 2).map(([id]) => id);
+      const secondRelations = await discoverInBatches(secondLevelIds);
+      if (token !== loadToken) return;
+      secondRelations.forEach(([id, friends]) => adjacency.set(id, friends));
+    }
+
+    nodes = Array.from(levels, ([id, level]) => {
+      const friend = Data.gpgDetails[id];
+      return {
+        id,
+        level,
+        name: level === 0
+          ? State.ownProfile.name || 'You'
+          : (friend && friend.name) || `${id.slice(0, 10)}…`,
+        online: level === 0 || Boolean(friend && friend.isOnline),
+      };
+    });
+
+    const edgeKeys = new Set();
+    edges = [];
+    adjacency.forEach((friends, source) => {
+      friends.forEach((target) => {
+        if (!levels.has(source) || !levels.has(target) || source === target) return;
+        const key = uniqueEdgeKey(source, target);
+        if (edgeKeys.has(key)) return;
+        edgeKeys.add(key);
+        edges.push({ source, target });
+      });
+    });
+
+    positions = layoutGraph(nodes, edges, edgeLength);
+    loadedAt = Date.now();
+    loading = false;
+    m.redraw();
+  }
+
+  function redrawLayout() {
+    positions = layoutGraph(nodes, edges, edgeLength);
+  }
+
+  function setZoom(value) {
+    zoom = Math.max(0.5, Math.min(2.5, Number(value)));
+  }
+
+  function pointerPosition(event) {
+    const svg = event.currentTarget.ownerSVGElement || event.currentTarget;
+    const bounds = svg.getBoundingClientRect();
+    const rawX = ((event.clientX - bounds.left) / bounds.width) * WIDTH;
+    const rawY = ((event.clientY - bounds.top) / bounds.height) * HEIGHT;
+    return {
+      x: WIDTH / 2 + (rawX - WIDTH / 2) / zoom,
+      y: HEIGHT / 2 + (rawY - HEIGHT / 2) / zoom,
+    };
+  }
+
+  return {
+    oninit: () => {
+      if (nodes.length === 0 || Date.now() - loadedAt > GRAPH_CACHE_MS) loadGraph();
+    },
+    view: () => m('.network-graph', [
+      m('.network-graph__toolbar', [
+        m('button[type=button]', { onclick: loadGraph, disabled: loading }, [
+          m('i.fas.fa-sync-alt', { class: loading ? 'fa-spin' : '' }),
+          ' Redraw',
+        ]),
+        m('label', [
+          'Friendship level',
+          m('select', {
+            value: friendshipLevel,
+            onchange: (event) => {
+              friendshipLevel = Number(event.target.value);
+              loadGraph();
+            },
+          }, [m('option[value=1]', '1'), m('option[value=2]', '2')]),
+        ]),
+        m('label.network-graph__edge-control', [
+          `Edge length ${edgeLength}`,
+          m('input[type=range][min=60][max=180][step=5]', {
+            value: edgeLength,
+            //  The label follows the slider, the layout waits for the release:
+            //  layoutGraph() is 140 iterations of an O(n^2) force loop, which
+            //  measures 24 ms at 20 nodes, 199 ms at 100 and 729 ms at the 200
+            //  node cap. A range input fires oninput dozens of times per drag,
+            //  each one blocking the main thread for that long.
+            oninput: (event) => {
+              edgeLength = Number(event.target.value);
+            },
+            onchange: redrawLayout,
+          }),
+        ]),
+        m('.network-graph__zoom-control', [
+          m('button[type=button][title=Zoom out][aria-label=Zoom out]', {
+            onclick: () => setZoom(zoom - 0.1),
+          }, m('i.fas.fa-minus')),
+          m('label', [
+            `Zoom ${Math.round(zoom * 100)}%`,
+            m('input[type=range][min=0.5][max=2.5][step=0.1]', {
+              value: zoom,
+              oninput: (event) => setZoom(event.target.value),
+            }),
+          ]),
+          m('button[type=button][title=Zoom in][aria-label=Zoom in]', {
+            onclick: () => setZoom(zoom + 0.1),
+          }, m('i.fas.fa-plus')),
+          m('button[type=button][title=Reset zoom]', {
+            onclick: () => setZoom(1),
+          }, '100%'),
+        ]),
+        m('.network-graph__search', [
+          m('i.fas.fa-search'),
+          m('input[type=search][placeholder=Find a peer…]', {
+            value: search,
+            oninput: (event) => (search = event.target.value),
+          }),
+        ]),
+      ]),
+      loading
+        ? m('.network-graph__message', [m('i.fas.fa-spinner.fa-spin'), ' Loading network graph…'])
+        : error
+          ? m('.network-graph__message.network-graph__message--error', error)
+          : m('svg.network-graph__canvas', {
+              viewBox: `0 0 ${WIDTH} ${HEIGHT}`,
+              role: 'img',
+              'aria-label': `Network graph with ${nodes.length} peers and ${edges.length} connections`,
+              onwheel: (event) => {
+                event.preventDefault();
+                setZoom(zoom + (event.deltaY < 0 ? 0.1 : -0.1));
+              },
+              onpointermove: (event) => {
+                if (!draggedId) return;
+                positions[draggedId] = pointerPosition(event);
+              },
+              onpointerup: () => (draggedId = null),
+              onpointerleave: () => (draggedId = null),
+            }, m('g.network-graph__zoom-layer', {
+              transform: `translate(${WIDTH / 2} ${HEIGHT / 2}) scale(${zoom}) translate(${-WIDTH / 2} ${-HEIGHT / 2})`,
+            }, [
+              m('g.network-graph__edges', edges.map((edge) => {
+                const source = positions[edge.source];
+                const target = positions[edge.target];
+                return source && target && m('line', {
+                  x1: source.x, y1: source.y, x2: target.x, y2: target.y,
+                });
+              })),
+              m('g.network-graph__nodes', nodes.map((node) => {
+                const position = positions[node.id];
+                const matches = search && node.name.toLowerCase().includes(search.toLowerCase());
+                const color = node.level === 0 ? '#d6d91f' : node.online ? '#16a34a' : '#64748b';
+                return m('g.network-graph__node', {
+                  class: matches ? 'is-match' : '',
+                  transform: `translate(${position.x} ${position.y})`,
+                  onpointerdown: (event) => {
+                    draggedId = node.id;
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                  },
+                }, [
+                  m('title', `${node.name}\n${node.id}`),
+                  m('circle', { r: node.level === 0 ? 13 : 10, fill: color }),
+                  m('text', { x: 14, y: 4 }, node.name),
+                ]);
+              })),
+            ])),
+      !loading && !error && m('.network-graph__legend', [
+        m('span', [m('i.network-graph__key.network-graph__key--own'), ' You']),
+        m('span', [m('i.network-graph__key.network-graph__key--online'), ' Online']),
+        m('span', [m('i.network-graph__key.network-graph__key--offline'), ' Offline / discovered']),
+        m('span', `${nodes.length} peers · ${edges.length} connections`),
+      ]),
+    ]),
+  };
+};
+
+module.exports = NetworkGraph;
  
 }); 
 require.register("network/network_state", function(exports, require, module) { 
@@ -17948,7 +19156,7 @@ const State = {
   selectedOwnGxsDetails: null,
   selectedFriendGpgId: null,
   mainTab: 'network', // 'network' | 'chats'
-  activeTab: 'details', // 'details' | 'chat'
+  activeTab: 'details', // 'details' | 'chat' | 'graph'
   searchString: '',
   gpgToGxsIdMap: {},
   gxsIdToDetailsMap: {},
@@ -17979,21 +19187,62 @@ function loadOwnProfile() {
     }
   }).catch(() => {});
 
+  const fetchOwnCustomState = () => {
+    rs.rsJsonApiRequest('/rsChats/getOwnCustomStateString', {}, (statusData) => {
+      if (statusData) {
+        let customState;
+        if (typeof statusData.retval === 'string') {
+          customState = statusData.retval;
+        } else if (typeof statusData === 'string') {
+          customState = statusData;
+        } else if (statusData.retval && typeof statusData.retval === 'object') {
+          customState =
+            statusData.retval.status ||
+            statusData.retval.customState ||
+            statusData.retval.custom_state ||
+            statusData.retval.status_string ||
+            '';
+        } else {
+          customState =
+            statusData.customState ||
+            statusData.custom_state ||
+            statusData.status ||
+            statusData.status_string ||
+            statusData.ownCustomStateString ||
+            '';
+        }
+        State.ownProfile.customState = customState;
+        m.redraw();
+      }
+    }).catch(() => {
+      if (State.ownProfile.ssl_id) {
+        rs.rsJsonApiRequest(
+          '/rsChats/getCustomStateString',
+          { peer_id: State.ownProfile.ssl_id },
+          (statusData) => {
+            if (statusData) {
+              const customState =
+                typeof statusData.retval === 'string'
+                  ? statusData.retval
+                  : statusData.customState || statusData.custom_state || statusData.status || '';
+              State.ownProfile.customState = customState;
+              m.redraw();
+            }
+          }
+        ).catch(() => {});
+      }
+    });
+  };
+
+  fetchOwnCustomState();
+
   rs.rsJsonApiRequest('/rsConfig/getConfigNetStatus', {}, (data) => {
     if (data && data.status) {
       State.ownProfile.name = data.status.ownName || 'Unknown';
       State.ownProfile.ssl_id = data.status.ownId || '';
 
       if (State.ownProfile.ssl_id) {
-        rs.rsJsonApiRequest('/rsChats/getCustomStateString', { peer_id: State.ownProfile.ssl_id }, (statusData) => {
-          if (statusData) {
-            const customState = typeof statusData.retval === 'string'
-              ? statusData.retval
-              : statusData.customState || statusData.custom_state || statusData.status || '';
-            State.ownProfile.customState = customState;
-            m.redraw();
-          }
-        });
+        fetchOwnCustomState();
 
         rs.rsJsonApiRequest('/rsPeers/getPeerDetails', { sslId: State.ownProfile.ssl_id }, (detData) => {
           if (detData && detData.det) {
@@ -18259,9 +19508,39 @@ function scrollChatToBottom() {
   }, 100);
 }
 
+function setOwnCustomStateString(statusString) {
+  const str = (statusString || '').trim();
+  rs.rsJsonApiRequest('/rsChats/setCustomStateString', { status_string: str }, () => {
+    State.ownProfile.customState = str;
+    m.redraw();
+  }).catch(() => {
+    State.ownProfile.customState = str;
+    m.redraw();
+  });
+}
+
+async function setOwnStatus(statusValue) {
+  const value = Number(statusValue);
+  if (![1, 2, 3].includes(value)) return false;
+
+  try {
+    const response = await rs.rsJsonApiRequest('/rsStatus/sendStatus', { status: value });
+    if (response && response.body && response.body.retval === false) return false;
+
+    State.ownProfile.statusValue = value;
+    State.ownProfile.statusTimestamp = Math.floor(Date.now() / 1000);
+    m.redraw();
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 module.exports = {
   State,
   loadOwnProfile,
+  setOwnCustomStateString,
+  setOwnStatus,
   loadSelectedOwnGxsDetails,
   fetchIdDetails,
   loadGxsIdentities,
@@ -19230,6 +20509,7 @@ const SignedIdentiy = () => {
                   {
                     id: owns.ids[0],
                     name: v.attrs.name,
+                    avatar: { mData: { base64: v.attrs.avatar } },
                     pseudonimous: false,
                     pgpPassword: passphase,
                   },
@@ -19254,61 +20534,90 @@ const SignedIdentiy = () => {
   };
 };
 const CreateIdentity = () => {
-  // TODO: set user avatar
   let name = '',
     pseudonimous = false;
+  let avatar;
+  let avatarPreview = '';
+  let avatarFileName = '';
   return {
-    view: (v) => [
-      m('i.fas.fa-user-plus'),
-      m('h3', 'Create new Identity'),
-      m('hr'),
-      m('input[type=text][placeholder=Name]', {
+    view: () => m('.create-identity-form', [
+      m('.create-identity-form__heading', [
+        m('i.fas.fa-user-plus'),
+        m('div', [
+          m('h3', 'Create new Identity'),
+          m('p', 'Choose a name, identity type, and optional custom avatar.'),
+        ]),
+      ]),
+      m('input.create-identity-form__name[type=text][placeholder=Identity name]', {
         value: name,
         oninput: (e) => (name = e.target.value),
       }),
-      m(
-        'div',
-        {
-          style: 'display:inline; margin-left:5px;',
-        },
-        [
-          'Type:',
-          m(
-            'select',
-            {
-              value: pseudonimous,
-              style: 'border:1px solid black',
-              oninput: (e) => {
-                pseudonimous = e.target.value === 'true';
-              },
-            },
-            [
-              m('option[value=false][selected]', 'Linked to your Profile'),
-              m('option[value=true]', 'Pseudonymous'),
-            ]
-          ),
-        ]
-      ),
-      m('br'),
-
-      m(
-        'p',
+      m('.create-identity-form__avatar', [
+        m('.create-identity-avatar-preview', [
+          avatarPreview
+            ? m('img', { src: avatarPreview, alt: 'Identity avatar preview' })
+            : m(peopleUtil.UserAvatar, {
+              identityId: `new-identity:${name || 'identity'}`,
+              firstLetter: (name || '?').slice(0, 1).toUpperCase(),
+              size: 128,
+              isSquare: true,
+            }),
+        ]),
+        m('span.create-identity-form__avatar-label', 'Avatar'),
+        m('input.create-identity-form__file-input[type=file][id=create-identity-avatar][accept=image/*]', {
+          onchange: (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            avatarFileName = file.name;
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              avatarPreview = reader.result;
+              avatar = avatarPreview.substring(avatarPreview.indexOf(',') + 1);
+              m.redraw();
+            };
+            reader.readAsDataURL(file);
+          },
+        }),
+        m('label.create-identity-form__file-button[for=create-identity-avatar]', {
+          title: avatarFileName || 'Choose a custom avatar',
+        }, [m('i.fas.fa-upload'), avatarPreview ? ' Change avatar' : ' Choose avatar']),
+        avatarPreview && m('button.create-identity-form__remove-avatar[type=button]', {
+          onclick: () => {
+            avatar = undefined;
+            avatarPreview = '';
+            avatarFileName = '';
+          },
+        }, 'Use default'),
+        m('small', avatarPreview ? 'Custom avatar selected.' : 'A unique default avatar is generated automatically.'),
+      ]),
+      m('.create-identity-form__field', [
+        m('label[for=create-identity-type]', 'Identity type'),
+        m('select.config-style-select[id=create-identity-type]', {
+          value: String(pseudonimous),
+          onchange: (e) => (pseudonimous = e.target.value === 'true'),
+        }, [
+          m('option[value=false]', 'Linked to your Profile'),
+          m('option[value=true]', 'Pseudonymous'),
+        ]),
+      ]),
+      m('p.create-identity-form__help',
         'You can have one or more identities. ' +
         'They are used when you chat in lobbies, ' +
         'forums and channel comments. ' +
         'They act as the destination for distant chat and ' +
         'the Retroshare distant mail system.'
       ),
-      m(
-        'button',
+      m('button.create-identity-form__submit',
         {
+          disabled: !name.trim(),
           onclick: () => {
             !pseudonimous
-              ? widget.popupMessage(m(SignedIdentiy, { name }))
+              ? widget.popupMessage(m(SignedIdentiy, { name: name.trim(), avatar }))
               : rs.rsJsonApiRequest(
                 '/rsIdentity/createIdentity',
                 {
-                  name,
+                  name: name.trim(),
+                  avatar: { mData: { base64: avatar } },
                   pseudonimous,
                 },
                 (data) => {
@@ -19322,7 +20631,7 @@ const CreateIdentity = () => {
         },
         'Create'
       ),
-    ],
+    ]),
   };
 };
 
@@ -19550,7 +20859,7 @@ const Layout = () => {
           m(
             'button',
             {
-              onclick: () => widget.popupMessage(m(CreateIdentity)),
+              onclick: () => widget.popupMessage(m(CreateIdentity), 'create-identity-modal'),
             },
             'New Identity'
           ),
@@ -19782,7 +21091,7 @@ const PeopleSidebar = () => {
                 m(
                   'button.btn-add-id[title=Create New Identity]',
                   {
-                    onclick: () => widget.popupMessage(m(CreateIdentity)),
+                    onclick: () => widget.popupMessage(m(CreateIdentity), 'create-identity-modal'),
                   },
                   m('i.fas.fa-plus')
                 ),
@@ -20764,6 +22073,55 @@ const UserAvatar = () => ({
   },
 });
 
+const identityDetailsCache = new Map();
+
+function loadIdentityDetails(id) {
+  if (!id || id === '0000000000000000') return Promise.resolve(null);
+  const cached = identityDetailsCache.get(id);
+  if (cached && Object.prototype.hasOwnProperty.call(cached, 'details')) {
+    return Promise.resolve(cached.details);
+  }
+  if (cached && cached.promise) return cached.promise;
+
+  const promise = rs.rsJsonApiRequest('/rsIdentity/getIdDetails', { id })
+    .then((response) => {
+      const details = response && response.body ? response.body.details : null;
+      identityDetailsCache.set(id, { details });
+      m.redraw();
+      return details;
+    })
+    .catch(() => {
+      identityDetailsCache.set(id, { details: null });
+      return null;
+    });
+
+  identityDetailsCache.set(id, { promise });
+  return promise;
+}
+
+const IdentityAvatar = () => ({
+  oninit: (vnode) => loadIdentityDetails(vnode.attrs.identityId),
+  onbeforeupdate: (vnode, old) => {
+    if (vnode.attrs.identityId !== old.attrs.identityId) {
+      loadIdentityDetails(vnode.attrs.identityId);
+    }
+  },
+  view: (vnode) => {
+    const id = vnode.attrs.identityId;
+    const cached = identityDetailsCache.get(id);
+    const details = cached && cached.details;
+    const name = vnode.attrs.name || (details && details.mNickname) || '';
+
+    return m(UserAvatar, {
+      avatar: details && details.mAvatar,
+      identityId: id,
+      firstLetter: name.slice(0, 1).toUpperCase(),
+      seed: id || name,
+      size: vnode.attrs.size || 38,
+    });
+  },
+});
+
 function contactlist(list) {
   if (list === undefined) return [];
   return list.filter((id) => {
@@ -20813,15 +22171,9 @@ async function loadOwnIds(onlySigned) {
     return (response && response.body && response.body.ids) || [];
   }
 
-  // Modern RetroShare exposes the complete list in one request. Keep the two
-  // specialised calls as a compatibility fallback for older cores.
-  try {
-    const response = await rs.rsJsonApiRequest('/rsIdentity/getOwnIds', {});
-    if (response && response.body && Array.isArray(response.body.ids)) return response.body.ids;
-  } catch {
-    // Fall through to the legacy endpoints below.
-  }
-
+  // The complete list is these two calls put together. /rsIdentity/getOwnIds
+  // is not an alternative to them: it is the deprecated one, it carries no
+  // @jsonapi annotation, and the core answers 404.
   const [signedResponse, pseudonymousResponse] = await Promise.all([
     rs.rsJsonApiRequest('/rsIdentity/getOwnSignedIds', {}),
     rs.rsJsonApiRequest('/rsIdentity/getOwnPseudonimousIds', {}),
@@ -20956,6 +22308,7 @@ module.exports = {
   ownIds,
   checksudo,
   UserAvatar,
+  IdentityAvatar,
   contactlist,
   SearchBar,
   regularcontactInfo,

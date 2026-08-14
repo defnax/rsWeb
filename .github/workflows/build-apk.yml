@@ -33,14 +33,31 @@ jobs:
       - name: Build Debug & Release APKs
         run: ./gradlew assembleDebug assembleRelease --stacktrace
 
+      - name: Add Build Date and Commit Hash to APK Names
+        shell: bash
+        run: |
+          BUILD_DATE="$(date -u +'%Y%m%d')"
+          GIT_HASH="$(git rev-parse --short HEAD)"
+
+          echo "BUILD_DATE=$BUILD_DATE" >> "$GITHUB_ENV"
+          echo "GIT_HASH=$GIT_HASH" >> "$GITHUB_ENV"
+
+          for BUILD_TYPE in debug release; do
+            APK_DIR="app/build/outputs/apk/$BUILD_TYPE"
+            APK_FILE="$(find "$APK_DIR" -maxdepth 1 -type f -name '*.apk' -print -quit)"
+            APK_NAME="$(basename "$APK_FILE" .apk)"
+            APK_PREFIX="${APK_NAME%-${BUILD_TYPE}}"
+            mv "$APK_FILE" "$APK_DIR/${APK_PREFIX}-${BUILD_DATE}-${BUILD_TYPE}.apk"
+          done
+
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rsWeb-Debug-APK
+          name: rsWeb-${{ env.BUILD_DATE }}-g${{ env.GIT_HASH }}-debug
           path: app/build/outputs/apk/debug/*.apk
 
       - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rsWeb-Release-APK
+          name: rsWeb-${{ env.BUILD_DATE }}-g${{ env.GIT_HASH }}-release
           path: app/build/outputs/apk/release/*.apk

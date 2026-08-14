@@ -105,7 +105,7 @@ android {
 }
 
 dependencies {
-    implementation("org.retroshare.service:libretroshare-MinApiLevel24-debug:46e37897")
+    implementation("org.retroshare.service:libretroshare-MinApiLevel24-debug:ebbc30e3")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 
     implementation("androidx.core:core-ktx:1.12.0")

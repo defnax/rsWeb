@@ -69,6 +69,19 @@
     console.error(TAG, 'Step1 ❌ error:', e);
   }
 
+  // Install this before the post-login early return below. The WebUI's logout
+  // only routes to its built-in login page, so rsWeb must handle it first.
+  document.addEventListener('click', function (event) {
+    const logoutLink = event.target && event.target.closest
+      ? event.target.closest('.logout-link')
+      : null;
+    if (!logoutLink) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    clearSavedCredentials();
+    window.location.reload();
+  }, true);
+
   // If this is the post-login reload we're done here — don't run checkAuthStatus.
   if (isPostLoginReload) {
     console.log(TAG, 'post-login reload: skipping checkAuthStatus');
@@ -117,6 +130,15 @@
     } catch (e) {
       console.error(TAG, 'saveSessionCredentials ❌', e);
     }
+  }
+
+  function clearSavedCredentials() {
+    ['rs_username', 'rs_passwd', 'rs_url', 'rs_isVerified', POST_LOGIN_FLAG]
+      .forEach(function (key) {
+        sessionStorage.removeItem(key);
+        localStorage.removeItem(key);
+      });
+    console.log(TAG, 'clearSavedCredentials ✅');
   }
 
   // ─── finishAndLoad ────────────────────────────────────────────────────────────

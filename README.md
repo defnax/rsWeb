@@ -2,6 +2,8 @@
 
 A lightweight, native Android application for running the **RetroShare C++ P2P Core** and **RSNewWebUI** directly on Android devices.
 
+![RetroShare Web on Android](retroshareweb.png)
+
 ## Features
 
 - **Foreground Service (`RetroShareService`)**: Runs the native RetroShare C++ P2P core, exposing the local JSON API on `127.0.0.1:9092`.

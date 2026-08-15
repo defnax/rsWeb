@@ -116,6 +116,7 @@ require.register("home", function(exports, require, module) {
 const m = require('mithril');
 const rs = require('rswebui');
 const widget = require('widgets');
+const NetworkData = require('network/network_data');
 
 const logo = () => {
   return {
@@ -192,6 +193,35 @@ const retroshareId = () => {
     el.style.height = 'auto';
     el.style.height = el.scrollHeight + 'px';
   }
+
+  async function copyId(value) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(value);
+    } else {
+      const field = document.getElementById('retroId');
+      field.select();
+      document.execCommand('copy');
+    }
+    widget.popupMessage(m(ConfirmCopied), 'copy-confirmation-modal');
+  }
+
+  async function shareId(value) {
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'My RetroShare ID',
+          text: value,
+        });
+        return;
+      } catch (error) {
+        // Closing the native share sheet is intentional and needs no fallback.
+        if (error && error.name === 'AbortError') return;
+      }
+    }
+
+    await copyId(value);
+  }
+
   return {
     view(v) {
       return m('.retroshareID', [
@@ -215,7 +245,19 @@ const retroshareId = () => {
             widget.popupMessage(m(ConfirmCopied), 'copy-confirmation-modal');
           },
         }),
-        m('i.fas.fa-share-alt'),
+        m('i.fas.fa-share-alt', {
+          role: 'button',
+          tabindex: 0,
+          title: 'Share RetroShare ID',
+          'aria-label': 'Share RetroShare ID',
+          onclick: () => shareId(v.attrs.ownCert),
+          onkeydown: (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              shareId(v.attrs.ownCert);
+            }
+          },
+        }),
       ]);
     },
   };
@@ -223,6 +265,24 @@ const retroshareId = () => {
 
 function invalidCertPrompt() {
   widget.popupMessage([m('h3', 'Invalid RetroShare ID'), m('hr'), m('p', 'Check the ID and try again.')]);
+}
+
+async function refreshFriendLists(expectedGpgId) {
+  const expected = String(expectedGpgId || '').toLowerCase();
+  const retryDelays = [0, 300, 1000];
+
+  for (const delay of retryDelays) {
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    try {
+      await NetworkData.refreshGpgDetails();
+      if (!expected || NetworkData.gpgDetails[expected]) break;
+    } catch (_) {
+      // RetroShare may still be storing the imported certificate/location.
+    }
+  }
+
+  rs.userList.loadUsers();
+  m.redraw();
 }
 
 function confirmAddPrompt(details, cert, long) {
@@ -233,6 +293,8 @@ function confirmAddPrompt(details, cert, long) {
           onclick: async () => {
             const res = await rs.rsJsonApiRequest('/rsPeers/loadCertificateFromString', { cert });
             if (res.body.retval) {
+              NetworkData.rememberPendingFriend(details);
+              await refreshFriendLists(details.gpg_id || details.pgpId);
               widget.popupMessage([
                 m('h3', 'Successful'),
                 m('hr'),
@@ -258,6 +320,8 @@ function confirmAddPrompt(details, cert, long) {
               pgpId: details.gpg_id,
             });
             if (res.body.retval) {
+              NetworkData.rememberPendingFriend(details);
+              await refreshFriendLists(details.gpg_id || details.pgpId);
               widget.popupMessage([
                 m('h3', 'Successful'),
                 m('hr'),
@@ -9120,8 +9184,15 @@ const ChatRoomDetailView = () => {
 
 const ChatRoomJoinView = () => {
   let ownIds = [];
+  let stopWatching;
   return {
-    oninit: () => peopleUtil.ownIds((data) => (ownIds = data)),
+    oninit: () => {
+      stopWatching = peopleUtil.watchOwnIds((data) => {
+        ownIds = data;
+        m.redraw();
+      });
+    },
+    onremove: () => stopWatching && stopWatching(),
     view: () => {
       const room = ChatHubState.selectedRoom;
       if (!room) return null;
@@ -9692,8 +9763,15 @@ const Layout = {
 */
 const LayoutCreateDistant = () => {
   let ownIds = [];
+  let stopWatching;
   return {
-    oninit: () => peopleUtil.ownIds((data) => (ownIds = data)),
+    oninit: () => {
+      stopWatching = peopleUtil.watchOwnIds((data) => {
+        ownIds = data;
+        m.redraw();
+      });
+    },
+    onremove: () => stopWatching && stopWatching(),
     view: (vnode) =>
       m('.node-panel.chat-panel.chat-room', [
         m('.createDistantChat', [
@@ -18306,6 +18384,63 @@ const Data = {
   gpgDetails: {},
 };
 
+const PENDING_FRIENDS_KEY = 'rs-webui-pending-friends';
+let pendingFriends = {};
+try {
+  pendingFriends = JSON.parse(localStorage.getItem(PENDING_FRIENDS_KEY) || '{}');
+} catch (_) {
+  pendingFriends = {};
+}
+
+function savePendingFriends() {
+  try {
+    localStorage.setItem(PENDING_FRIENDS_KEY, JSON.stringify(pendingFriends));
+  } catch (_) {
+    // The in-memory entry still works when private browsing blocks storage.
+  }
+}
+
+function hasValidatedFingerprint(value) {
+  const fingerprint = String(value || '').replace(/\s/g, '');
+  return /[1-9a-f]/i.test(fingerprint);
+}
+
+Data.rememberPendingFriend = function (peerDetails) {
+  const data = peerDetails || {};
+  const gpgId = String(data.gpg_id || data.pgpId || '').toLowerCase();
+  const sslId = String(data.id || data.sslId || '');
+  if (!gpgId || !sslId) return;
+  const pendingValidation = !hasValidatedFingerprint(data.fpr || data.fingerprint);
+
+  pendingFriends[gpgId] = {
+    name: data.name || (pendingValidation
+      ? `Profile ID ${gpgId.toUpperCase()} (Not yet validated)`
+      : `Profile ID ${gpgId.toUpperCase()}`),
+    fingerprint: data.fpr || '',
+    isSearched: false,
+    isOnline: false,
+    pendingValidation,
+    locations: [{
+      name: data.location || 'Unknown location',
+      id: sslId,
+      lastSeen: data.lastConnect || 0,
+      isOnline: false,
+      gpg_id: gpgId,
+      customState: '',
+      statusValue: 0,
+      statusTimestamp: 0,
+      avatar: '',
+      peerDetails: data,
+    }],
+    customState: '',
+    statusValue: 0,
+    statusTimestamp: 0,
+    avatar: '',
+  };
+  Data.gpgDetails[gpgId] = pendingFriends[gpgId];
+  savePendingFriends();
+};
+
 function normalizeStatusValue(value, fallback) {
   if (value && typeof value === 'object') value = value.value ?? value.status ?? value.xint32;
   if (typeof value === 'number') return value;
@@ -18418,6 +18553,25 @@ Data.refreshGpgDetails = async function () {
     })
   );
 
+  Object.entries(pendingFriends).forEach(([gpgId, pending]) => {
+    if (details[gpgId]) {
+      const nativeFriend = details[gpgId];
+      const isValidated = hasValidatedFingerprint(nativeFriend.fingerprint || pending.fingerprint);
+
+      // Unvalidated short-invite peers are returned with an empty profile
+      // name and an all-zero fingerprint. Keep the name parsed from the
+      // RetroShare ID until the core has validated the PGP profile.
+      if (!nativeFriend.name) nativeFriend.name = pending.name;
+      if (isValidated) {
+        delete pendingFriends[gpgId];
+        savePendingFriends();
+      } else {
+        nativeFriend.pendingValidation = true;
+      }
+    } else {
+      details[gpgId] = pending;
+    }
+  });
   Data.gpgDetails = details;
 };
 module.exports = Data;
@@ -18572,7 +18726,9 @@ const DetailsTab = () => {
       if (!friend) return null;
 
       const friendGxsId = State.gpgToGxsIdMap[gpgId.toLowerCase()];
-      const status = Data.getStatusPresentation(friend.statusValue, friend.isOnline);
+      const status = friend.pendingValidation
+        ? { label: 'Pending validation', color: '#b45309' }
+        : Data.getStatusPresentation(friend.statusValue, friend.isOnline);
       const fingerprint = formatFingerprint(friend.fingerprint);
 
       return m('.network-detail-view', [
@@ -18930,7 +19086,9 @@ const FriendsList = () => {
                 const firstLetter = (friend.name || '?').slice(0, 1).toUpperCase();
                 const isSelected = State.selectedFriendGpgId === gpgId;
                 const hist = State.chatHistoryMap && State.chatHistoryMap[gpgId];
-                const status = Data.getStatusPresentation(friend.statusValue, friend.isOnline);
+                const status = friend.pendingValidation
+                  ? { value: 0, label: 'Pending validation', color: '#f59e0b' }
+                  : Data.getStatusPresentation(friend.statusValue, friend.isOnline);
 
                 const isOnlineOrActive = friend.isOnline || (status && status.value > 0);
 
@@ -19021,6 +19179,10 @@ const FriendsList = () => {
                           },
                           friend.customState
                         ),
+                      friend.pendingValidation &&
+                        m('.friend-custom-status', {
+                          style: 'font-size: 0.8rem; color: #b45309; margin-top: 2px;',
+                        }, 'Pending validation'),
                     ]),
                   ]
                 );
@@ -19840,6 +20002,7 @@ const m = require('mithril');
 const rs = require('rswebui');
 const Data = require('network/network_data');
 const compose = require('mail/mail_compose');
+const peopleUtil = require('people/people_util');
 const {
   State,
   fetchIdDetails,
@@ -19857,6 +20020,7 @@ const DetailsTab = require('people/people_details_tab');
 const ChatTab = require('people/people_chat_tab');
 
 const PeopleLayout = () => {
+  let stopWatchingOwnIds;
   const dismissMenu = () => {
     if (State.activeMenu) {
       State.activeMenu = null;
@@ -19870,6 +20034,17 @@ const PeopleLayout = () => {
       Data.refreshGpgDetails().then(() => m.redraw());
       loadGxsIdentities();
       loadOwnGxsIds().then(() => preloadAllChatHistory());
+      stopWatchingOwnIds = peopleUtil.watchOwnIds((ids) => {
+        State.ownGxsIds = ids || [];
+        if (!peopleUtil.isUsableIdentityId(State.selectedId)) {
+          State.selectedId = State.ownGxsIds[0] || null;
+          State.mobilePane = State.selectedId ? State.mobilePane : 'list';
+        }
+        if (!State.selectedOwnGxsIdForChat && State.ownGxsIds.length) {
+          State.selectedOwnGxsIdForChat = State.ownGxsIds[0];
+        }
+        m.redraw();
+      });
       preloadAllChatHistory();
       window.addEventListener('click', dismissMenu);
 
@@ -19936,6 +20111,7 @@ const PeopleLayout = () => {
         rs.events[15].notify = () => {};
       }
       stopStatusPolling();
+      if (stopWatchingOwnIds) stopWatchingOwnIds();
       window.removeEventListener('click', dismissMenu);
     },
 
@@ -20771,56 +20947,62 @@ const rs = require('rswebui');
 const widget = require('widgets');
 const peopleUtil = require('people/people_util');
 
-const SignedIdentiy = () => {
-  let passphase = '';
+const SignedIdentity = () => {
+  let passphrase = '';
+  let submitting = false;
+
+  const submit = async (v) => {
+    if (submitting || !passphrase) return;
+    submitting = true;
+    const previousIds = await peopleUtil.ownIds();
+    rs.rsJsonApiRequest(
+      '/rsIdentity/createIdentity',
+      {
+        name: v.attrs.name,
+        avatar: { mData: { base64: v.attrs.avatar } },
+        pseudonimous: false,
+        pgpPassword: passphrase,
+      },
+      async (data) => {
+        if (data.retval) await peopleUtil.refreshOwnIds(previousIds);
+        const message = data.retval
+          ? 'Successfully created identity.'
+          : 'Could not create the identity. Check your profile password and try again.';
+        widget.popupMessage(
+          m('.signed-identity-result', [m('h3', 'Create new identity'), m('p', message)]),
+          'signed-identity-modal'
+        );
+      }
+    ).catch(() => {
+      submitting = false;
+      m.redraw();
+    });
+  };
 
   return {
-    view: (v) => [
-      m('i.fas.fa-user-edit'),
-      m('h3', 'Enter your passpharse'),
-      m('hr'),
-
-      m('input[type=password][placeholder=Passpharse]', {
-        style: 'margin-top:50px;width:80%',
-        oninput: (e) => {
-          passphase = e.target.value;
-        },
+    view: (v) => m('form.signed-identity-form', {
+      onsubmit: (event) => {
+        event.preventDefault();
+        submit(v);
+      },
+    }, [
+      m('.signed-identity-form__heading', [
+        m('i.fas.fa-user-edit'),
+        m('div', [
+          m('h3', 'Create signed identity'),
+          m('p', 'Enter your RetroShare profile password to link this identity.'),
+        ]),
+      ]),
+      m('label[for=signed-identity-password]', 'Profile password'),
+      m('input#signed-identity-password[type=password][placeholder=Password][autocomplete=current-password]', {
+        value: passphrase,
+        autofocus: true,
+        oninput: (e) => (passphrase = e.target.value),
       }),
-      m(
-        'button',
-        {
-          style: 'margin-top:160px;',
-          onclick: () => {
-            rs.rsJsonApiRequest('/rsIdentity/getOwnSignedIds', {}, (owns) => {
-
-              owns.ids.length > 0
-                ? rs.rsJsonApiRequest(
-                  '/rsIdentity/createIdentity',
-                  {
-                    id: owns.ids[0],
-                    name: v.attrs.name,
-                    avatar: { mData: { base64: v.attrs.avatar } },
-                    pseudonimous: false,
-                    pgpPassword: passphase,
-                  },
-                  (data) => {
-                    const message = data.retval
-                      ? 'Successfully created identity.'
-                      : 'An error occured while creating identity.';
-                    widget.popupMessage([m('h3', 'Create new Identity'), m('hr'), message]);
-                  }
-                )
-                : widget.popupMessage([
-                  m('h3', 'Create new Identity'),
-                  m('hr'),
-                  'An error occured while creating identity.',
-                ]);
-            });
-          },
-        },
-        'Enter'
-      ),
-    ],
+      m('button.signed-identity-form__submit[type=submit]', {
+        disabled: !passphrase || submitting,
+      }, submitting ? 'Creating…' : 'Create identity'),
+    ]),
   };
 };
 const CreateIdentity = () => {
@@ -20902,7 +21084,10 @@ const CreateIdentity = () => {
           disabled: !name.trim(),
           onclick: () => {
             !pseudonimous
-              ? widget.popupMessage(m(SignedIdentiy, { name: name.trim(), avatar }))
+              ? widget.popupMessage(
+                m(SignedIdentity, { name: name.trim(), avatar }),
+                'signed-identity-modal'
+              )
               : rs.rsJsonApiRequest(
                 '/rsIdentity/createIdentity',
                 {
@@ -20910,7 +21095,8 @@ const CreateIdentity = () => {
                   avatar: { mData: { base64: avatar } },
                   pseudonimous,
                 },
-                (data) => {
+                async (data) => {
+                  if (data.retval) await peopleUtil.refreshOwnIds();
                   const message = data.retval
                     ? 'Successfully created identity.'
                     : 'An error occured while creating identity.';
@@ -21140,8 +21326,15 @@ const Identity = () => {
 
 const Layout = () => {
   let ownIds = [];
+  let stopWatching;
   return {
-    oninit: () => peopleUtil.ownIds((data) => (ownIds = data)),
+    oninit: () => {
+      stopWatching = peopleUtil.watchOwnIds((data) => {
+        ownIds = data;
+        m.redraw();
+      });
+    },
+    onremove: () => stopWatching && stopWatching(),
     view: () =>
       m('.widget', [
         m('.widget__heading', [
@@ -21395,17 +21588,20 @@ const PeopleSidebar = () => {
             displayItems.length === 0
               ? m('.network-pane-placeholder', { style: 'padding: 2rem 0;' }, State.mainTab === 'chats' ? 'No active chats' : 'No identities found')
               : displayItems.map((item) => {
-                  let gxsId, displayName;
+                  let gxsId;
                   if (State.mainTab === 'people' && State.activeFilter === 'own') {
                     gxsId = item;
-                    displayName = rs.userList.username(gxsId) || 'Unknown';
                   } else {
                     gxsId = item.mGroupId;
-                    displayName = item.mGroupName || 'Unknown';
                   }
 
                   fetchIdDetails(gxsId);
                   const itemDetails = State.gxsIdToDetailsMap[gxsId];
+                  const displayName = (itemDetails && (itemDetails.mNickname || itemDetails.mGroupName))
+                    || (State.mainTab === 'people' && State.activeFilter === 'own'
+                      ? rs.userList.username(gxsId)
+                      : item.mGroupName)
+                    || 'Loading…';
                   const itemAvatar = getSafeAvatar(itemDetails);
                   const itemFirstLetter = (displayName || '?').slice(0, 1).toUpperCase();
                   const isSelected = State.selectedId === gxsId;
@@ -21679,18 +21875,27 @@ function getDistantChatSession(gxsId) {
 }
 
 
-function fetchIdDetails(gxsId) {
-  if (!gxsId) return;
+function fetchIdDetails(gxsId, attempt = 0) {
+  if (!peopleUtil.isUsableIdentityId(gxsId)) return;
   if (State.gxsIdToDetailsMap[gxsId] === undefined) {
     State.gxsIdToDetailsMap[gxsId] = null; // Mark as loading
     rs.rsJsonApiRequest('/rsIdentity/getIdDetails', { id: gxsId }, (detData) => {
-      if (detData && detData.details) {
+      const details = detData && detData.details;
+      const detailsId = details && String(details.mId || '');
+      if (details && peopleUtil.isUsableIdentityId(detailsId)) {
         State.gxsIdToDetailsMap[gxsId] = detData.details;
         const pgpId = detData.details.mPgpId;
         if (pgpId && pgpId !== '0000000000000000') {
           State.gpgToGxsIdMap[pgpId.toLowerCase()] = gxsId;
         }
         m.redraw();
+      } else if (attempt < 5) {
+        setTimeout(() => {
+          State.gxsIdToDetailsMap[gxsId] = undefined;
+          fetchIdDetails(gxsId, attempt + 1);
+        }, 250 * (attempt + 1));
+      } else {
+        State.gxsIdToDetailsMap[gxsId] = undefined;
       }
     });
   }
@@ -22460,6 +22665,54 @@ const ownIdsCache = {
   all: { ids: null, loadedAt: 0, promise: null },
   signed: { ids: null, loadedAt: 0, promise: null },
 };
+const OWN_IDS_CHANGED_EVENT = 'rs-own-identities-changed';
+const OWN_ID_REFRESH_DELAYS = [0, 200, 500, 1000, 2000, 4000];
+
+function isUsableIdentityId(id) {
+  const value = String(id || '');
+  return value !== '' && !/^0+$/.test(value);
+}
+
+function normalizeOwnIds(ids) {
+  return sortIds(Array.from(new Set((ids || []).filter(isUsableIdentityId))));
+}
+
+function invalidateOwnIds() {
+  Object.values(ownIdsCache).forEach((cache) => {
+    cache.ids = null;
+    cache.loadedAt = 0;
+  });
+}
+
+async function refreshOwnIds(previousIds = null) {
+  const previous = new Set(normalizeOwnIds(previousIds || []));
+  const waitForNewIdentity = previousIds !== null;
+  let ids = [];
+
+  for (const delay of OWN_ID_REFRESH_DELAYS) {
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    ids = normalizeOwnIds(await loadOwnIds(false));
+    if (!waitForNewIdentity || ids.some((id) => !previous.has(id))) break;
+  }
+
+  ownIdsCache.all.ids = ids;
+  ownIdsCache.all.loadedAt = Date.now();
+  ownIdsCache.signed.ids = null;
+  ownIdsCache.signed.loadedAt = 0;
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(OWN_IDS_CHANGED_EVENT, { detail: { ids } }));
+  }
+  return ids;
+}
+
+function watchOwnIds(consumer) {
+  const listener = (event) => consumer([...(event.detail.ids || [])]);
+  if (typeof window !== 'undefined') window.addEventListener(OWN_IDS_CHANGED_EVENT, listener);
+  ownIds(consumer);
+  return () => {
+    if (typeof window !== 'undefined') window.removeEventListener(OWN_IDS_CHANGED_EVENT, listener);
+  };
+}
 
 async function loadOwnIds(onlySigned) {
   if (onlySigned) {
@@ -22491,7 +22744,7 @@ async function ownIds(consumer = () => { }, onlySigned = false) {
     if (!cache.promise) {
       cache.promise = loadOwnIds(onlySigned)
         .then((ids) => {
-          cache.ids = sortIds(Array.from(new Set(ids || [])));
+          cache.ids = normalizeOwnIds(ids);
           cache.loadedAt = Date.now();
           return cache.ids;
         })
@@ -22602,12 +22855,16 @@ module.exports = {
   sortUsers,
   sortIds,
   ownIds,
+  invalidateOwnIds,
+  refreshOwnIds,
+  watchOwnIds,
   checksudo,
   UserAvatar,
   IdentityAvatar,
   contactlist,
   SearchBar,
   regularcontactInfo,
+  isUsableIdentityId,
 };
  
 }); 

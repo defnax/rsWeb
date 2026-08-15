@@ -76,6 +76,28 @@ if (Test-Path $sourceWebUi) {
     }
     
     Copy-Item -Path "$sourceWebUi\*" -Destination $TargetAssetsDir -Recurse -Force
+
+    # Keep rsWeb's logout hook on generated mobile navigation markup. Upstream
+    # WebUI builds may emit a plain button, which would otherwise bypass the
+    # custom auth portal and reveal the built-in WebUI login screen.
+    $appJsPath = Join-Path $TargetAssetsDir "app.js"
+    if (Test-Path $appJsPath) {
+        $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+        $appJs = [System.IO.File]::ReadAllText($appJsPath)
+        $mobileLogoutPattern = "m\('button\[type=button\]', \{ onclick: \(\) => rs\.logout\(\) \}, \[m\('i\.fas\.fa-sign-out-alt'\), ' Logout'\]\)"
+        $patchedAppJs = [System.Text.RegularExpressions.Regex]::Replace(
+            $appJs,
+            $mobileLogoutPattern,
+            "m('button.logout-link[type=button]', { onclick: () => rs.logout() }, [m('i.fas.fa-sign-out-alt'), ' Logout'])"
+        )
+        if ($patchedAppJs -ne $appJs) {
+            [System.IO.File]::WriteAllText($appJsPath, $patchedAppJs, $utf8NoBom)
+            Write-Host "Patched mobile logout hook in app.js" -ForegroundColor Green
+        } elseif ($appJs -notmatch "button\.logout-link\[type=button\].+rs\.logout") {
+            Write-Warning "Mobile logout markup was not recognized; rsweb/auth.js fallback remains active."
+        }
+    }
+
     Write-Host "Successfully synced WebUI assets to: $TargetAssetsDir" -ForegroundColor Green
 } else {
     Write-Host "Error: Compiled WebUI directory not found at $sourceWebUi" -ForegroundColor Red

@@ -181,7 +181,7 @@ const ConfirmCopied = () => {
         'p[style="margin: 4px 0 12px"]',
         'Now, you can paste and send it to your friend via email or some other way.'
       ),
-      m('button', {}, 'Ok'),
+      m('button', { onclick: widget.closePopupMessage }, 'Ok'),
     ],
   };
 };
@@ -212,7 +212,7 @@ const retroshareId = () => {
           onclick: () => {
             document.getElementById('retroId').select();
             document.execCommand('copy');
-            widget.popupMessage(m(ConfirmCopied));
+            widget.popupMessage(m(ConfirmCopied), 'copy-confirmation-modal');
           },
         }),
         m('i.fas.fa-share-alt'),
@@ -811,7 +811,7 @@ const navbar = () => {
                       ? 'Connected to RetroShare Core'
                       : 'Connection Lost',
                   }),
-                  m('span.webui-version', { style: { fontSize: '0.7em' } }, 'v139'),
+                  m('span.webui-version', { style: { fontSize: '0.7em' } }, 'v140'),
                   m('i.fas.fa-sync-alt.refresh-icon', {
                     style: { cursor: 'pointer', fontSize: '0.8em' },
                     onclick: () => window.location.reload(true),
@@ -933,7 +933,7 @@ const MobileStatus = () => {
               m('small', statusbar.formatBytes(state.totalOut)),
             ]),
           ]),
-          m('.mobile-status-sheet__version', 'WebUI v139'),
+          m('.mobile-status-sheet__version', 'WebUI v140'),
         ])),
       ];
     },
@@ -4066,6 +4066,13 @@ const SidebarQuickView = () => {
 // There are ways of doing this inside m.route but it is probably
 // cleaner and faster when kept outside of the main auto
 // rendering system
+function closePopupMessage() {
+  const container = document.getElementById('modal-container');
+  if (!container) return;
+  m.mount(container, null);
+  container.style.display = 'none';
+}
+
 function popupMessage(message, modalClass = '') {
   const container = document.getElementById('modal-container');
   container.style.display = 'block';
@@ -4093,8 +4100,7 @@ function popupMessage(message, modalClass = '') {
         'button.red.close-btn',
         {
           onclick: () => {
-            m.mount(container, null);
-            container.style.display = 'none';
+            closePopupMessage();
           },
         },
         m('i.fas.fa-times')
@@ -4110,6 +4116,7 @@ module.exports = {
   Sidebar,
   SidebarQuickView,
   popupMessage,
+  closePopupMessage,
 };
  
 }); 
@@ -6547,7 +6554,9 @@ const CommentsTable = () => {
     oninit: (v) => {},
     view: (v) =>
       m('table.comments', [
-        m('tr', [
+        // See table.mails: the header row is tagged so the small screen
+        // stylesheet can card-ify the data rows only.
+        m('tr.comments-head', [
           m('th', ''),
           m('th', 'Comment'),
           m('th', 'Author'),
@@ -9177,6 +9186,7 @@ const Layout = {
   oninit: () => {
     ChatHubState.activeTab = 'chat';
     const lobbyId = m.route.param('lobby');
+    ChatHubState.mobilePane = lobbyId ? 'detail' : 'list';
     if (lobbyId) {
       ChatHubState.selectedRoomId = lobbyId;
       ChatLobbyModel.loadLobby(lobbyId);
@@ -9204,8 +9214,11 @@ const Layout = {
   onupdate: () => {
     const lobbyId = m.route.param('lobby');
     if (lobbyId && ChatHubState.selectedRoomId !== lobbyId) {
+      ChatHubState.mobilePane = 'detail';
       ChatHubState.selectedRoomId = lobbyId;
       ChatLobbyModel.loadLobby(lobbyId);
+    } else if (!lobbyId) {
+      ChatHubState.mobilePane = 'list';
     }
   },
   onremove: () => {
@@ -9259,7 +9272,7 @@ const Layout = {
       ChatHubState.selectedRoomType = null;
     }
 
-    return m('.chat-hub-container', [
+    return m('.chat-hub-container' + (ChatHubState.mobilePane === 'detail' ? '.mobile-detail-open' : ''), [
       m('.chat-hub-left-pane', [
         m('.chat-own-profile-card', [
           m('.profile-header', [
@@ -9317,6 +9330,7 @@ const Layout = {
                   {
                     key: hexId,
                     onclick: () => {
+                      ChatHubState.mobilePane = 'detail';
                       m.route.set('/chat/:lobby', { lobby: hexId });
                     },
                   },
@@ -9346,6 +9360,7 @@ const Layout = {
                   {
                     key: hexId,
                     onclick: () => {
+                      ChatHubState.mobilePane = 'detail';
                       m.route.set('/chat/:lobby', { lobby: hexId });
                     },
                   },
@@ -9545,6 +9560,16 @@ const Layout = {
       ]),
 
       m('.chat-hub-right-pane', [
+        m('.mobile-pane-header', [
+          m('button.mobile-back-button', {
+            type: 'button',
+            onclick: () => {
+              ChatHubState.mobilePane = 'list';
+              m.route.set('/chat');
+            },
+          }, [m('i.fas.fa-chevron-left'), ' Chats']),
+          m('strong', ChatHubState.selectedRoom ? (ChatHubState.selectedRoom.lobby_name || 'Conversation') : 'Conversation'),
+        ]),
         ChatHubState.selectedRoom
           ? [
               ChatHubState.selectedRoomType === 'subscribed'
@@ -9868,6 +9893,42 @@ module.exports = {
   EmojiPicker,
   setDependencies,
 };
+ 
+}); 
+require.register("chat/chat_preview", function(exports, require, module) { 
+function chatPreviewText(rawText) {
+  if (!rawText) return '';
+
+  const source = String(rawText);
+  if (!/[<&]/.test(source)) return source.trim();
+
+  const hasImage = /<img\b/i.test(source) || /&lt;img\b/i.test(source);
+  const decodeEntities = (text) => {
+    const decoder = document.createElement('textarea');
+    decoder.innerHTML = text;
+    return decoder.value;
+  };
+  const stripMarkup = (text) => text
+    .replace(/<(style|script|head)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<\/p\s*>|<\/div\s*>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ');
+
+  // Some peers send literal HTML while others send the same payload with its
+  // tags entity-encoded. Decode and strip a second time for the latter form.
+  let text = decodeEntities(stripMarkup(source));
+  if (/<[^>]+>/.test(text)) text = decodeEntities(stripMarkup(text));
+  text = text
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (text) return text;
+  if (hasImage) return 'Photo';
+  return 'Message';
+}
+
+module.exports = chatPreviewText;
  
 }); 
 require.register("chat/chat_state", function(exports, require, module) { 
@@ -10732,6 +10793,7 @@ const ChatLobbyModel = {
 // ************************* Chat Hub State ****************************
 
 const ChatHubState = {
+  mobilePane: 'list',
   selectedRoomId: null,
   selectedRoom: null,
   selectedRoomType: null,
@@ -17703,6 +17765,8 @@ const {
   startDirectChat,
   getOnlineSslId,
   preloadNetworkChatHistory,
+  loadDirectChatMessages,
+  markDirectChatRead,
 } = require('network/network_state');
 const { OwnProfileCard, FriendsList } = require('network/network_friends_list');
 const DetailsTab = require('network/network_details_tab');
@@ -17712,6 +17776,8 @@ const NetworkGraph = require('network/network_graph');
 const NetworkLayout = () => {
   return {
     oninit: () => {
+      // Keep the active-chat list current even when no conversation is open.
+      loadDirectChatMessages();
       Data.refreshGpgDetails().then(() => {
         preloadNetworkChatHistory();
         m.redraw();
@@ -17737,15 +17803,23 @@ const NetworkLayout = () => {
         State.gxsIdentities.forEach((gxsId) => fetchIdDetails(gxsId));
       }
 
-      return m('.network-container', [
+      return m('.network-container' + (State.mobilePane === 'detail' ? '.mobile-detail-open' : ''), [
         m('.network-left-pane', [m(OwnProfileCard), m(FriendsList)]),
         m('.network-right-pane', [
+          m('.mobile-pane-header', [
+            m('button.mobile-back-button', {
+              type: 'button',
+              onclick: () => { State.mobilePane = 'list'; },
+            }, [m('i.fas.fa-chevron-left'), ' Network']),
+            m('strong', State.activeTab === 'graph' ? 'Network Graph' : (selectedFriend ? selectedFriend.name : 'Friend')),
+          ]),
           m('.network-tabs', [
                   m(
                     'button.tab-btn' + (State.activeTab === 'details' ? '.active' : ''),
                     {
                       onclick: () => {
                         State.activeTab = 'details';
+                        State.mobilePane = 'detail';
                       },
                     },
                     'Details View'
@@ -17755,6 +17829,8 @@ const NetworkLayout = () => {
                     {
                       onclick: () => {
                         State.activeTab = 'chat';
+                        State.mobilePane = 'detail';
+                        markDirectChatRead(State.selectedFriendGpgId);
                         const sslId = getOnlineSslId(State.selectedFriendGpgId);
                         if (sslId && !State.currentChatPeerId) {
                           startDirectChat(sslId);
@@ -17765,7 +17841,7 @@ const NetworkLayout = () => {
                   ),
                   m(
                     'button.tab-btn' + (State.activeTab === 'graph' ? '.active' : ''),
-                    { onclick: () => { State.activeTab = 'graph'; } },
+                    { onclick: () => { State.activeTab = 'graph'; State.mobilePane = 'detail'; } },
                     [m('i.fas.fa-project-diagram'), ' Network Graph']
                   ),
           ]),
@@ -18630,12 +18706,14 @@ require.register("network/network_friends_list", function(exports, require, modu
 const m = require('mithril');
 const Data = require('network/network_data');
 const peopleUtil = require('people/people_util');
+const chatPreviewText = require('chat/chat_preview');
 const {
   State,
   startDirectChat,
   getOnlineSslId,
   setOwnCustomStateString,
   setOwnStatus,
+  markDirectChatRead,
 } = require('network/network_state');
 
 function formatRelativeTime(ts) {
@@ -18761,12 +18839,9 @@ const FriendsList = () => {
       const allGpgEntries = Object.entries(Data.gpgDetails || {});
 
       // Compute active chats count
-      let activeChatsCount = 0;
+      let unreadChatsCount = 0;
       allGpgEntries.forEach(([gpgId]) => {
-        const hist = State.chatHistoryMap && State.chatHistoryMap[gpgId];
-        if (hist && hist.lastMsg) {
-          activeChatsCount++;
-        }
+        unreadChatsCount += State.unreadChatCount[gpgId] || 0;
       });
 
       let displayFriends;
@@ -18828,8 +18903,18 @@ const FriendsList = () => {
               [
                 m('i.fas.fa-comments'),
                 ' Chats',
-                activeChatsCount > 0 && m('span.segment-badge', activeChatsCount),
+                unreadChatsCount > 0 && m('span.segment-badge', unreadChatsCount),
               ]
+            ),
+            m(
+              'button.segment-tab.mobile-graph-shortcut',
+              {
+                onclick: () => {
+                  State.activeTab = 'graph';
+                  State.mobilePane = 'detail';
+                },
+              },
+              [m('i.fas.fa-project-diagram'), ' Graph']
             ),
           ]),
         ]),
@@ -18858,6 +18943,8 @@ const FriendsList = () => {
                       onclick: () => {
                         State.selectedFriendGpgId = gpgId;
                         State.activeTab = 'chat';
+                        State.mobilePane = 'detail';
+                        markDirectChatRead(gpgId);
                         const sslId = getOnlineSslId(gpgId);
                         if (sslId) startDirectChat(sslId);
                       },
@@ -18880,10 +18967,12 @@ const FriendsList = () => {
                           },
                           friend.name
                         ),
-                        m('.chat-last-msg', hist ? hist.lastMsg : ''),
+                        m('.chat-last-msg', hist ? chatPreviewText(hist.lastMsg) : ''),
                       ]),
                       m('.chat-meta', [
                         hist && hist.lastTime && m('.chat-time', formatRelativeTime(hist.lastTime)),
+                        (State.unreadChatCount[gpgId] || 0) > 0 &&
+                          m('.chat-unread-badge', State.unreadChatCount[gpgId]),
                       ]),
                     ]
                   );
@@ -18896,6 +18985,8 @@ const FriendsList = () => {
                     key: gpgId,
                     onclick: () => {
                       State.selectedFriendGpgId = gpgId;
+                      State.activeTab = 'details';
+                      State.mobilePane = 'detail';
                       State.currentChatPeerId = null;
                       State.chatMessages = [];
                       if (State.activeTab === 'chat') {
@@ -19086,6 +19177,13 @@ const NetworkGraph = () => {
     const token = ++loadToken;
     loading = true;
     error = '';
+
+    // The mobile Graph shortcut can be opened before NetworkLayout's initial
+    // friend refresh finishes. Wait for fresh peer data so we do not cache a
+    // graph containing only the local node.
+    await Data.refreshGpgDetails();
+    if (token !== loadToken) return;
+
     const ownId = State.ownProfile.gpg_id;
     if (!ownId) {
       loading = false;
@@ -19172,9 +19270,9 @@ const NetworkGraph = () => {
     },
     view: () => m('.network-graph', [
       m('.network-graph__toolbar', [
-        m('button[type=button]', { onclick: loadGraph, disabled: loading }, [
+        m('button.network-graph__redraw[type=button][title=Redraw graph][aria-label=Redraw graph]', { onclick: loadGraph, disabled: loading }, [
           m('i.fas.fa-sync-alt', { class: loading ? 'fa-spin' : '' }),
-          ' Redraw',
+          m('span', 'Redraw'),
         ]),
         m('label', [
           'Friendship level',
@@ -19309,11 +19407,13 @@ const State = {
   selectedFriendGpgId: null,
   mainTab: 'network', // 'network' | 'chats'
   activeTab: 'details', // 'details' | 'chat' | 'graph'
+  mobilePane: 'list', // Phone master/detail navigation: 'list' | 'detail'
   searchString: '',
   gpgToGxsIdMap: {},
   gxsIdToDetailsMap: {},
   gxsIdentities: [],
   chatHistoryMap: {}, // gpgId -> { lastMsg, lastTime }
+  unreadChatCount: {}, // gpgId -> unread messages received during this session
   currentChatPeerId: null,
   chatMessages: [],
   chatInputMsg: '',
@@ -19474,6 +19574,13 @@ function loadGxsIdentities() {
 function startDirectChat(sslId) {
   State.currentChatPeerId = sslId;
   State.chatMessages = [];
+  const normalizedSslId = String(sslId || '').toLowerCase();
+  const matchingFriend = Object.entries(Data.gpgDetails || {}).find(([, friend]) =>
+    ((friend && friend.locations) || []).some(
+      (location) => String(location.id || '').toLowerCase() === normalizedSslId
+    )
+  );
+  if (matchingFriend) markDirectChatRead(matchingFriend[0]);
   loadDirectChatMessages();
   loadRecentDirectChatHistory();
 }
@@ -19501,36 +19608,33 @@ function preloadNetworkChatHistory() {
   gpgIds.forEach((gpgId) => {
     if (!gpgId || gpgId === '0000000000000000') return;
 
-    const privatePeerId = {
-      broadcast_status_peer_id: '00000000000000000000000000000000',
-      type: 1, // PRIVATE
-      peer_id: gpgId,
-      distant_chat_id: '00000000000000000000000000000000',
-      lobby_id: { xstr64: '0' },
-    };
+    const friend = Data.gpgDetails[gpgId];
+    const sslIds = Array.from(new Set(
+      ((friend && friend.locations) || []).map((location) => location.id).filter(Boolean)
+    ));
 
-    rs.rsJsonApiRequest(
-      '/rsHistory/getMessages',
-      {
-        chatPeerId: privatePeerId,
-        loadCount: 20,
-      },
-      (msgData, success) => {
-        if (success && msgData && msgData.msgs) {
-          const userMsgs = msgData.msgs.filter(
-            (m) => !m.isSystem && !isSystemMsg(m.message || m.msg)
-          );
-          if (userMsgs.length > 0) {
-            const last = userMsgs[userMsgs.length - 1];
-            State.chatHistoryMap[gpgId] = {
-              lastMsg: last.message || last.msg || '',
-              lastTime: last.sendTime || last.recvTime || Math.floor(Date.now() / 1000),
-            };
-            m.redraw();
-          }
-        }
-      }
-    );
+    Promise.all(sslIds.map((sslId) => new Promise((resolve) => {
+      rs.rsJsonApiRequest(
+        '/rsHistory/getMessages',
+        { chatPeerId: directChatId(sslId), loadCount: 20 },
+        (msgData, success) => resolve(
+          success && msgData && Array.isArray(msgData.msgs) ? msgData.msgs : []
+        )
+      ).catch(() => resolve([]));
+    }))).then((messageGroups) => {
+      const userMsgs = messageGroups.flat().filter(
+        (message) => !message.isSystem && !isSystemMsg(message.message || message.msg)
+      ).sort(
+        (a, b) => (a.sendTime || a.recvTime || 0) - (b.sendTime || b.recvTime || 0)
+      );
+      if (userMsgs.length === 0) return;
+      const last = userMsgs[userMsgs.length - 1];
+      State.chatHistoryMap[gpgId] = {
+        lastMsg: last.message || last.msg || '',
+        lastTime: last.sendTime || last.recvTime || Math.floor(Date.now() / 1000),
+      };
+      m.redraw();
+    });
   });
 }
 
@@ -19539,22 +19643,45 @@ function loadDirectChatMessages() {
     const messagePeerId = chatMessage.chat_id && chatMessage.chat_id.peer_id
       ? rs.idToHex(chatMessage.chat_id.peer_id)
       : '';
-    if (
-      chatMessage.chat_id &&
-      chatMessage.chat_id.type === 1 &&
-      messagePeerId === State.currentChatPeerId
-    ) {
-      State.chatMessages.push(chatMessage);
-      if (State.selectedFriendGpgId) {
-        State.chatHistoryMap[State.selectedFriendGpgId] = {
-          lastMsg: chatMessage.msg || chatMessage.message || '',
-          lastTime: chatMessage.sendTime || chatMessage.recvTime || Math.floor(Date.now() / 1000),
-        };
+    if (!chatMessage.chat_id || chatMessage.chat_id.type !== 1 || !messagePeerId) return;
+
+    const normalizedPeerId = messagePeerId.toLowerCase();
+    const matchingFriend = Object.entries(Data.gpgDetails || {}).find(([, friend]) =>
+      ((friend && friend.locations) || []).some(
+        (location) => String(location.id || '').toLowerCase() === normalizedPeerId
+      )
+    );
+    const gpgId = matchingFriend ? matchingFriend[0] : null;
+
+    // Update the Chats list for every private message, not only for the
+    // conversation that happens to be visible.
+    if (gpgId) {
+      State.chatHistoryMap[gpgId] = {
+        lastMsg: chatMessage.msg || chatMessage.message || '',
+        lastTime: chatMessage.sendTime || chatMessage.recvTime || Math.floor(Date.now() / 1000),
+      };
+
+      const isOpenConversation =
+        State.activeTab === 'chat' &&
+        State.selectedFriendGpgId === gpgId &&
+        normalizedPeerId === String(State.currentChatPeerId || '').toLowerCase() &&
+        (window.innerWidth > 700 || State.mobilePane === 'detail');
+      if (chatMessage.incoming === true && !isOpenConversation) {
+        State.unreadChatCount[gpgId] = (State.unreadChatCount[gpgId] || 0) + 1;
       }
-      m.redraw();
+    }
+
+    if (normalizedPeerId === String(State.currentChatPeerId || '').toLowerCase()) {
+      State.chatMessages = mergeDirectChatMessages(State.chatMessages.concat(chatMessage));
       scrollChatToBottom();
     }
+    m.redraw();
   };
+}
+
+function markDirectChatRead(gpgId) {
+  if (!gpgId || !State.unreadChatCount[gpgId]) return;
+  State.unreadChatCount[gpgId] = 0;
 }
 
 function directChatId(peerId) {
@@ -19700,6 +19827,7 @@ module.exports = {
   getOnlineSslId,
   preloadNetworkChatHistory,
   loadDirectChatMessages,
+  markDirectChatRead,
   loadRecentDirectChatHistory,
   loadAllDirectChatHistory,
   sendDirectChatMessage,
@@ -19819,12 +19947,19 @@ const PeopleLayout = () => {
       const details = State.selectedId ? State.gxsIdToDetailsMap[State.selectedId] : null;
       const name = details ? details.mNickname || details.mGroupName || 'Unknown' : '';
 
-      return m('.people-container', [
+      return m('.people-container' + (State.mobilePane === 'detail' ? '.mobile-detail-open' : ''), [
         // Left Side Panel
         m(PeopleSidebar),
 
         // Right Side Details / Actions Pane
         m('.people-right-pane', [
+          m('.mobile-pane-header', [
+            m('button.mobile-back-button', {
+              type: 'button',
+              onclick: () => { State.mobilePane = 'list'; },
+            }, [m('i.fas.fa-chevron-left'), State.mainTab === 'chats' ? ' Chats' : ' People']),
+            m('strong', name || 'Profile'),
+          ]),
           State.selectedId && details
             ? [
                 m('.network-tabs', [
@@ -19833,6 +19968,7 @@ const PeopleLayout = () => {
                     {
                       onclick: () => {
                         State.activeTab = 'details';
+                        State.mobilePane = 'detail';
                         stopStatusPolling();
                       },
                     },
@@ -19843,6 +19979,7 @@ const PeopleLayout = () => {
                     {
                       onclick: () => {
                         State.activeTab = 'chat';
+                        State.mobilePane = 'detail';
                         initializeDistantChat();
                       },
                     },
@@ -19910,6 +20047,7 @@ PeopleLayout.setSelectedId = (id, activeTab = 'details', showCompose = false) =>
   State.activeFilter = filter;
   State.selectedId = id;
   State.activeTab = activeTab;
+  State.mobilePane = 'detail';
   if (showCompose) {
     State.showMailCompose = true;
   }
@@ -21072,6 +21210,7 @@ const m = require('mithril');
 const rs = require('rswebui');
 const widget = require('widgets');
 const peopleUtil = require('people/people_util');
+const chatPreviewText = require('chat/chat_preview');
 const ownIdsLayout = require('people/people_ownids');
 const { CreateIdentity } = ownIdsLayout;
 const {
@@ -21278,7 +21417,9 @@ const PeopleSidebar = () => {
                   const hist = State.chatHistoryMap[gxsId];
                   const lastTS = hist ? hist.lastTime : (itemDetails ? get64Num(itemDetails.mLastUsageTS) : 0);
                   const relativeTimeStr = formatRelativeTime(lastTS);
-                  const lastMsgText = hist && hist.lastMsg ? hist.lastMsg : (itemIsOwn ? 'My Identity' : itemIsContact ? 'Saved Contact' : 'Distant Chat');
+                  const lastMsgText = hist && hist.lastMsg
+                    ? chatPreviewText(hist.lastMsg)
+                    : (itemIsOwn ? 'My Identity' : itemIsContact ? 'Saved Contact' : 'Distant Chat');
 
                   if (State.mainTab === 'chats') {
                     return m(
@@ -21291,6 +21432,7 @@ const PeopleSidebar = () => {
                           State.activeMenu = null;
                           State.selectedId = gxsId;
                           State.activeTab = 'chat';
+                          State.mobilePane = 'detail';
                           initializeDistantChat();
                           m.redraw();
                         },
@@ -21345,6 +21487,7 @@ const PeopleSidebar = () => {
 
                         const idChanged = State.selectedId !== gxsId;
                         State.selectedId = gxsId;
+                        State.mobilePane = 'detail';
                         if (idChanged) {
                           State.chatPid = null;
                           State.chatMessages = [];
@@ -21505,6 +21648,7 @@ const State = {
   chatHistoryMap: {}, // gxsId -> { lastMsg, lastTime }
   showMailCompose: false,
   activeTab: 'details',
+  mobilePane: 'list', // Phone master/detail navigation: 'list' | 'detail'
   selectedOwnGxsIdForChat: '',
   chatPid: null,
   chatMessages: [],

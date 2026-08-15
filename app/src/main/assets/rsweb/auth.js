@@ -72,8 +72,20 @@
   // Install this before the post-login early return below. The WebUI's logout
   // only routes to its built-in login page, so rsWeb must handle it first.
   document.addEventListener('click', function (event) {
-    const logoutLink = event.target && event.target.closest
-      ? event.target.closest('.logout-link')
+    const clickedElement = event.target && event.target.closest
+      ? event.target.closest('.logout-link, button')
+      : null;
+    // RSNewWebUI is a generated bundle and some upstream versions omit the
+    // logout-link class from the mobile navigation button. Recognize that
+    // button by its icon and label as a fallback so asset syncs cannot expose
+    // the built-in WebUI login page again.
+    const isMobileLogout = clickedElement
+      && clickedElement.tagName === 'BUTTON'
+      && clickedElement.querySelector('.fa-sign-out-alt')
+      && clickedElement.textContent.trim().toLowerCase() === 'logout';
+    const logoutLink = clickedElement
+      && (clickedElement.classList.contains('logout-link') || isMobileLogout)
+      ? clickedElement
       : null;
     if (!logoutLink) return;
     event.preventDefault();

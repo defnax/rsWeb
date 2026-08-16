@@ -148,6 +148,9 @@ const webhelpConfirm = () => {
         {
           onclick: () => {
             window.open('https://retrosharedocs.readthedocs.io/en/latest/');
+            //  The documentation opens in another tab; leaving this one behind
+            //  it means coming back to a dialog that has nothing left to ask.
+            widget.closePopupMessage();
           },
         },
         'Ok'
@@ -194,15 +197,39 @@ const retroshareId = () => {
     el.style.height = el.scrollHeight + 'px';
   }
 
+  function copyIdFallback() {
+    const field = document.getElementById('retroId');
+    if (!field) return false;
+    field.select();
+    //  Deprecated, but the Clipboard API is only exposed in a secure context
+    //  and the web UI is normally served over plain http on the LAN.
+    return document.execCommand('copy');
+  }
+
   async function copyId(value) {
+    let copied;
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(value);
+      try {
+        await navigator.clipboard.writeText(value);
+        copied = true;
+      } catch (_) {
+        //  Denied permission or an unfocused document: fall back rather than
+        //  leaving the promise rejected and no feedback at all.
+        copied = copyIdFallback();
+      }
     } else {
-      const field = document.getElementById('retroId');
-      field.select();
-      document.execCommand('copy');
+      copied = copyIdFallback();
     }
-    widget.popupMessage(m(ConfirmCopied), 'copy-confirmation-modal');
+    widget.popupMessage(
+      copied
+        ? m(ConfirmCopied)
+        : [
+            m('h3', 'Copy failed'),
+            m('hr'),
+            m('p', 'Your browser refused the copy. Select the ID above and copy it by hand.'),
+          ],
+      'copy-confirmation-modal'
+    );
   }
 
   async function shareId(value) {
@@ -239,10 +266,16 @@ const retroshareId = () => {
           v.attrs.ownCert
         ),
         m('i.fas.fa-copy', {
-          onclick: () => {
-            document.getElementById('retroId').select();
-            document.execCommand('copy');
-            widget.popupMessage(m(ConfirmCopied), 'copy-confirmation-modal');
+          role: 'button',
+          tabindex: 0,
+          title: 'Copy RetroShare ID',
+          'aria-label': 'Copy RetroShare ID',
+          onclick: () => copyId(v.attrs.ownCert),
+          onkeydown: (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              copyId(v.attrs.ownCert);
+            }
           },
         }),
         m('i.fas.fa-share-alt', {
@@ -875,7 +908,7 @@ const navbar = () => {
                       ? 'Connected to RetroShare Core'
                       : 'Connection Lost',
                   }),
-                  m('span.webui-version', { style: { fontSize: '0.7em' } }, 'v140'),
+                  m('span.webui-version', { style: { fontSize: '0.7em' } }, 'v145'),
                   m('i.fas.fa-sync-alt.refresh-icon', {
                     style: { cursor: 'pointer', fontSize: '0.8em' },
                     onclick: () => window.location.reload(true),
@@ -997,7 +1030,7 @@ const MobileStatus = () => {
               m('small', statusbar.formatBytes(state.totalOut)),
             ]),
           ]),
-          m('.mobile-status-sheet__version', 'WebUI v140'),
+          m('.mobile-status-sheet__version', 'WebUI v145'),
         ])),
       ];
     },
@@ -4223,6 +4256,9 @@ const getBoards = {
   },
 };
 
+//  Group lists change on the scale of a conversation, not of a frame.
+const BOARD_LIST_REFRESH_MS = 30000;
+
 const sections = {
   MyBoards: require('boards/my_boards'),
   Subscribed: require('boards/subscribed_boards'),
@@ -4235,7 +4271,7 @@ const Layout = () => {
 
   return {
     oninit: () => {
-      rs.setBackgroundTask(getBoards.load, 30000, () => {
+      rs.setBackgroundTask(getBoards.load, BOARD_LIST_REFRESH_MS, () => {
         return m.route.get().startsWith('/boards');
       });
       peopleUtil.ownIds((data) => {
@@ -6311,6 +6347,9 @@ const getChannels = {
   },
 };
 
+//  Group lists change on the scale of a conversation, not of a frame.
+const CHANNEL_LIST_REFRESH_MS = 30000;
+
 const sections = {
   MyChannels: require('channels/my_channels'),
   Subscribed: require('channels/subscribed_channels'),
@@ -6323,9 +6362,14 @@ const Layout = () => {
 
   return {
     oninit: () => {
-      rs.setBackgroundTask(getChannels.load, 5000, () => {
-        // return m.route.get() === '/files/files';
-      });
+      //  The scope predicate used to be commented out, so it returned undefined
+      //  and setBackgroundTask stopped after the first interval: the channel list
+      //  was loaded once and never refreshed while the page stayed open. Same
+      //  period as the boards list, which asks the same kind of question -- a
+      //  five second poll of a whole summaries list is a lot to pay on a phone.
+      rs.setBackgroundTask(getChannels.load, CHANNEL_LIST_REFRESH_MS, () =>
+        m.route.get().startsWith('/channels')
+      );
       peopleUtil.ownIds((data) => {
         ownId = data;
         for (let i = 0; i < ownId.length; i++) {
@@ -8471,9 +8515,15 @@ const ChatRoomHeader = () => {
 };
 
 const ChatConversationView = () => {
+  let showAttachmentMenu = false;
+
   function onDocClick(e) {
     if (ChatHubState.showEmojiPicker && !e.target.closest('.emoji-picker-wrapper')) {
       ChatHubState.showEmojiPicker = false;
+      m.redraw();
+    }
+    if (showAttachmentMenu && !e.target.closest('.mobile-chat-attachment')) {
+      showAttachmentMenu = false;
       m.redraw();
     }
   }
@@ -8506,7 +8556,7 @@ const ChatConversationView = () => {
             '.chat-hub-input-area',
             [
               m(
-                'button.chat-hub-action-btn',
+                'button.chat-hub-action-btn.desktop-chat-attachment',
                 {
                   disabled: !canTalk,
                   style: !canTalk ? 'opacity: 0.5; cursor: not-allowed;' : '',
@@ -8518,6 +8568,50 @@ const ChatConversationView = () => {
                 },
                 m('i.fas.fa-paperclip')
               ),
+              m('.mobile-chat-attachment', [
+                m('button.chat-hub-action-btn', {
+                  disabled: !canTalk,
+                  style: !canTalk ? 'opacity: 0.5; cursor: not-allowed;' : '',
+                  title: 'Add attachment',
+                  onclick: (e) => {
+                    e.stopPropagation();
+                    showAttachmentMenu = !showAttachmentMenu;
+                    ChatHubState.showEmojiPicker = false;
+                  },
+                }, m('i.fas.fa-paperclip')),
+                showAttachmentMenu && m('.mobile-chat-attachment__menu', [
+                  m('button.mobile-chat-attachment__option', {
+                    type: 'button',
+                    onclick: () => {
+                      showAttachmentMenu = false;
+                      ChatHubState.showAttachModal = true;
+                    },
+                  }, [m('i.fas.fa-file'), ' File']),
+                  m('label.mobile-chat-attachment__option', [
+                    m('i.fas.fa-image'),
+                    ' Picture',
+                    m('input[type=file][accept=image/*]', {
+                      style: 'display: none;',
+                      onchange: (e) => {
+                        if (!e.target.files || !e.target.files[0]) return;
+                        const file = e.target.files[0];
+                        const textarea = e.target.closest('.chat-hub-input-area').querySelector('textarea');
+                        formatChatImage(file, (imgTag) => {
+                          if (imgTag && textarea) {
+                            const start = textarea.selectionStart || 0;
+                            const end = textarea.selectionEnd || 0;
+                            const val = textarea.value;
+                            textarea.value = val.substring(0, start) + imgTag + val.substring(end);
+                            m.redraw();
+                          }
+                        });
+                        showAttachmentMenu = false;
+                        e.target.value = '';
+                      },
+                    }),
+                  ]),
+                ]),
+              ]),
               m('.emoji-picker-wrapper', [
                 m(
                   'button.chat-hub-action-btn',
@@ -8534,7 +8628,7 @@ const ChatConversationView = () => {
                 ),
                 ChatHubState.showEmojiPicker && m(chatEmoji.EmojiPicker),
               ]),
-              m('label.chat-hub-action-btn', {
+              m('label.chat-hub-action-btn.desktop-chat-attachment', {
                 title: 'Send image',
                 style: `cursor: ${canTalk ? 'pointer' : 'not-allowed'}; opacity: ${canTalk ? 1 : 0.5};`,
               }, [
@@ -9139,7 +9233,7 @@ const ChatRoomDetailView = () => {
       }
 
       const participantCount = participants.length;
-      const participantNames = participants.map((p) => p.name).sort((a, b) => a.localeCompare(b));
+      const sortedParticipants = participants.sort((a, b) => a.name.localeCompare(b.name));
 
       const lobbyHexId = rs.idToHex(room.lobby_id);
       const privacy = getLobbyPrivacyInfo(room);
@@ -9168,12 +9262,34 @@ const ChatRoomDetailView = () => {
 
         m('.detail-section', [
           m('h3', 'Participants (' + participantCount + ')'),
-          participantNames.length > 0
+          sortedParticipants.length > 0
             ? m(
                 '.participants-grid',
-                participantNames.map((name) =>
-                  m('.participant-card', m('.participant-name', name))
-                )
+                sortedParticipants.map((participant) => {
+                  if (participant.key && ChatHubState.gxsDetails[participant.key] === undefined) {
+                    ChatHubState.gxsDetails[participant.key] = null;
+                    rs.rsJsonApiRequest('/rsIdentity/getIdDetails', { id: participant.key }, (data) => {
+                      if (data && data.details) {
+                        ChatHubState.gxsDetails[participant.key] = data.details;
+                        m.redraw();
+                      }
+                    });
+                  }
+
+                  const details = ChatHubState.gxsDetails[participant.key];
+                  const avatar = getSafeAvatar(details);
+                  const firstLetter = (participant.name || '?').slice(0, 1).toUpperCase();
+
+                  return m('.participant-card', [
+                    m(peopleUtil.UserAvatar, {
+                      avatar,
+                      firstLetter,
+                      identityId: participant.key,
+                      size: 32,
+                    }),
+                    m('.participant-name', participant.name),
+                  ]);
+                })
               )
             : m('p.no-participants', 'No participant information available'),
         ]),
@@ -9229,7 +9345,14 @@ const ChatRoomJoinView = () => {
                 '.identity-card',
                 { onclick: () => ChatLobbyModel.enterPublicLobby(lobbyHexId, nick) },
                 [
-                  m('.identity-name', rs.userList.username(nick) || nick),
+                  m('.identity-card__identity', [
+                    m(peopleUtil.IdentityAvatar, {
+                      identityId: nick,
+                      name: rs.userList.username(nick) || nick,
+                      size: 36,
+                    }),
+                    m('.identity-name', rs.userList.username(nick) || nick),
+                  ]),
                   m('i.fas.fa-sign-in-alt'),
                 ]
               )
@@ -9671,14 +9794,14 @@ const Layout = {
                         ),
                       ]),
                     ]),
-                    m('.chat-hub-tab-content', { style: { padding: ChatHubState.activeTab === 'chat' ? '0' : '1.5rem' } }, [
+                    m('.chat-hub-tab-content' + (ChatHubState.activeTab === 'details' ? '.details-content' : ''), { style: { padding: ChatHubState.activeTab === 'chat' ? '0' : '1.5rem' } }, [
                       ChatHubState.activeTab === 'chat'
                         ? m(ChatConversationView)
                         : m(ChatRoomDetailView),
                     ]),
                   ]
                 : [
-                    m('.chat-hub-tab-content', m(ChatRoomJoinView)),
+                    m('.chat-hub-tab-content.details-content', m(ChatRoomJoinView)),
                   ],
             ]
           : m('.chat-pane-placeholder', [
@@ -10360,6 +10483,15 @@ const ChatRoomsModel = {
             return;
           }
 
+          //  One getChatLobbyInfo per subscribed room, and each one is a whole
+          //  round trip: the JSON API answers `Connection: close`, so nothing is
+          //  pipelined and the browser only keeps six sockets open. Waiting for
+          //  the last answer before painting anything means the list appears
+          //  after N round trips -- invisible over loopback, seconds on a phone.
+          //  Paint each room as it lands instead, and ask for the public ones
+          //  right away rather than queueing them behind the whole batch.
+          ChatRoomsModel.loadPublicRooms();
+
           let count = 0;
           ids.forEach((id) =>
             loadLobbyDetails(id, (info) => {
@@ -10367,12 +10499,9 @@ const ChatRoomsModel = {
                 ChatRoomsModel.subscribedRooms[id] = info;
               }
               count++;
-              if (count === ids.length) {
-                ChatRoomsModel.loadPublicRooms();
-                if (after != null) {
-                  after();
-                }
-                m.redraw();
+              m.redraw();
+              if (count === ids.length && after != null) {
+                after();
               }
             })
           );
@@ -12725,16 +12854,29 @@ function addFile(url) {
 const NewFileDialog = () => {
   let url = '';
   return {
-    view: () => [
-      m('i.fas.fa-file-medical'),
-      m('h3', 'Add new file'),
-      m('hr'),
-      m('p', 'Enter the file link:'),
-      m('input[type=text][name=fileurl]', {
-        onchange: (e) => (url = e.target.value),
-      }),
-      m('button', { onclick: () => addFile(url) }, 'Add'),
-    ],
+    view: () =>
+      m(
+        'form.add-file-dialog',
+        {
+          onsubmit: (event) => {
+            event.preventDefault();
+            addFile(url);
+          },
+        },
+        [
+          m('.add-file-dialog__heading', [
+            m('i.fas.fa-file-medical'),
+            m('h3', 'Add new file'),
+          ]),
+          m('hr'),
+          m('label[for=new-file-url]', 'Enter the file link:'),
+          m('input#new-file-url[type=text][name=fileurl]', {
+            value: url,
+            oninput: (e) => (url = e.target.value),
+          }),
+          m('button[type=submit]', 'Add'),
+        ]
+      ),
   };
 };
 
@@ -12751,7 +12893,11 @@ const Component = () => {
     view: () => [
       m('.widget__body-heading', { style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-start' } }, [
         m('.action', { style: { marginBottom: '10px' } }, [
-          m('button', { onclick: () => widget.popupMessage(m(NewFileDialog)) }, 'Add new file'),
+          m(
+            'button',
+            { onclick: () => widget.popupMessage(m(NewFileDialog), 'add-file-modal') },
+            'Add new file'
+          ),
           m('button', { onclick: clearFileCompleted }, 'Clear completed'),
         ]),
         m('h3', `Downloads (${Downloads.hashes ? Downloads.hashes.length : 0} files)`),
@@ -12936,8 +13082,8 @@ const ShareDirTable = () => {
         ),
         m(
           'tbody.share-manager__table_body',
-          sharedDirArr.length &&
-          sharedDirArr.map((sharedDirItem, index) => {
+          sharedDirArr.length
+            ? sharedDirArr.map((sharedDirItem, index) => {
             const {
               filename,
               virtualname,
@@ -13015,7 +13161,8 @@ const ShareDirTable = () => {
                   : parentGroups.map((groupFlag) => futil.RsNodeGroupId[groupFlag]).join(', ')
               ),
             ]);
-          })
+              })
+            : m('tr.share-manager__empty', m('td[colspan=4]', 'No shared folders yet.'))
         ),
       ]);
     },
@@ -14191,6 +14338,9 @@ const getForums = {
     }
   },
 };
+//  Group lists change on the scale of a conversation, not of a frame.
+const FORUM_LIST_REFRESH_MS = 30000;
+
 const sections = {
   MyForums: require('forums/my_forums'),
   Subscribed: require('forums/subscribed_forums'),
@@ -14203,7 +14353,10 @@ const Layout = () => {
 
   return {
     oninit: () => {
-      rs.setBackgroundTask(getForums.load, 5000, () => {
+      //  Was every 5 s. getForumsSummaries returns the whole list every time,
+      //  and on a phone each poll is a fresh TCP handshake on a server that
+      //  answers one request at a time; the boards list already settled on 30 s.
+      rs.setBackgroundTask(getForums.load, FORUM_LIST_REFRESH_MS, () => {
         return m.route.get().includes('/forums');
       });
       peopleUtil.ownIds((data) => {
@@ -14289,6 +14442,11 @@ const Data = {
   ParentThreadMap: {},
   loading: new Set(),
 };
+
+//  'forumId/msgId' of the post bodies currently being fetched, see
+//  loadPostContent(). Module level rather than in Data: it is plumbing, not
+//  forum content.
+const bodyRequestsInFlight = new Set();
 
 function getTimestampValue(ts) {
   if (!ts) return 0;
@@ -14427,6 +14585,15 @@ async function loadPostContent(forumId, msgId) {
     return Data.Threads[forumId][msgId].thread.mMsg;
   }
 
+  //  This is called straight from the view (forum_view.js, the 'Loading
+  //  content...' branch), and the body stays null for the whole round trip, so
+  //  without this guard every redraw fires another getForumContent for the same
+  //  post -- and a redraw happens on each of the other posts' answers. An open
+  //  thread would multiply one request per post into one per post per redraw.
+  const inFlightKey = forumId + '/' + msgId;
+  if (bodyRequestsInFlight.has(inFlightKey)) return null;
+  bodyRequestsInFlight.add(inFlightKey);
+
   try {
     const res = await rs.rsJsonApiRequest('/rsgxsforums/getForumContent', {
       forumId,
@@ -14438,12 +14605,17 @@ async function loadPostContent(forumId, msgId) {
       if (Data.Threads[forumId] && Data.Threads[forumId][msgId]) {
         Data.Threads[forumId][msgId].thread.mMsg = body;
       }
+      //  The cached body is what stops the view from asking again, so the key
+      //  is only released once it is in place.
+      bodyRequestsInFlight.delete(inFlightKey);
       m.redraw();
       return body;
     }
   } catch (e) {
     console.error('[RS] Error loading post content:', forumId, msgId, e);
   }
+  //  Failure: the key is deliberately kept, so a post the core cannot return
+  //  is asked for once per visit instead of once per redraw, forever.
   return null;
 }
 
@@ -18048,7 +18220,18 @@ function pollHashStatusForDirectChat(localpath) {
 }
 
 const ChatTab = () => {
+  let showAttachmentMenu = false;
+
+  function onDocClick(e) {
+    if (showAttachmentMenu && !e.target.closest('.mobile-chat-attachment')) {
+      showAttachmentMenu = false;
+      m.redraw();
+    }
+  }
+
   return {
+    oncreate: () => document.addEventListener('click', onDocClick, true),
+    onremove: () => document.removeEventListener('click', onDocClick, true),
     view: () => {
       const gpgId = State.selectedFriendGpgId;
       const friend = Data.gpgDetails[gpgId];
@@ -18153,7 +18336,7 @@ const ChatTab = () => {
           ownName: State.ownProfile.name || 'You',
         }),
         m('.chat-input-area', { style: 'display: flex; align-items: center; gap: 0.5rem; padding: 0.75rem; background: #ffffff; border-top: 1px solid #cbd5e1;' }, [
-          m('button.chat-hub-action-btn', {
+          m('button.chat-hub-action-btn.desktop-chat-attachment', {
             title: 'Attach file link',
             onclick: () => {
               State.showAttachModal = true;
@@ -18163,6 +18346,48 @@ const ChatTab = () => {
               m.redraw();
             }
           }, m('i.fas.fa-paperclip')),
+
+          m('.mobile-chat-attachment', [
+            m('button.chat-hub-action-btn', {
+              title: 'Add attachment',
+              onclick: (e) => {
+                e.stopPropagation();
+                showAttachmentMenu = !showAttachmentMenu;
+                State.showEmojiPicker = false;
+              },
+            }, m('i.fas.fa-paperclip')),
+            showAttachmentMenu && m('.mobile-chat-attachment__menu', [
+              m('button.mobile-chat-attachment__option', {
+                type: 'button',
+                onclick: () => {
+                  showAttachmentMenu = false;
+                  State.showAttachModal = true;
+                  State.attachPath = '';
+                  State.attachBrowseHint = false;
+                  State.hashingError = '';
+                },
+              }, [m('i.fas.fa-file'), ' File']),
+              m('label.mobile-chat-attachment__option', [
+                m('i.fas.fa-image'),
+                ' Picture',
+                m('input[type=file][accept=image/*]', {
+                  style: 'display: none;',
+                  onchange: (e) => {
+                    if (!e.target.files || !e.target.files[0]) return;
+                    const file = e.target.files[0];
+                    formatDirectChatImage(file, (imgTag) => {
+                      if (imgTag) {
+                        State.chatInputMsg = (State.chatInputMsg || '') + imgTag;
+                        m.redraw();
+                      }
+                    });
+                    showAttachmentMenu = false;
+                    e.target.value = '';
+                  },
+                }),
+              ]),
+            ]),
+          ]),
 
           m('.emoji-picker-wrapper', { style: 'position: relative;' }, [
             m('button.chat-hub-action-btn', {
@@ -18181,7 +18406,7 @@ const ChatTab = () => {
             }),
           ]),
 
-          m('label.chat-hub-action-btn', {
+          m('label.chat-hub-action-btn.desktop-chat-attachment', {
             title: 'Send image',
             style: 'cursor: pointer;',
           }, [
@@ -18384,21 +18609,52 @@ const Data = {
   gpgDetails: {},
 };
 
-const PENDING_FRIENDS_KEY = 'rs-webui-pending-friends';
-let pendingFriends = {};
-try {
-  pendingFriends = JSON.parse(localStorage.getItem(PENDING_FRIENDS_KEY) || '{}');
-} catch (_) {
-  pendingFriends = {};
+//  A remembered friend is a placeholder shown while the core catches up with an
+//  addSslOnlyFriend / loadCertificateFromString that has just returned. That is
+//  a matter of seconds; anything older means the add did not stick, or the peer
+//  has since been removed, and the placeholder has to go rather than be
+//  re-injected into the friend list on every refresh, browser restarts included.
+const PENDING_FRIEND_TTL_MS = 5 * 60 * 1000;
+
+//  Keyed per node: several RetroShare profiles can be reached from the same
+//  browser, and their friend lists have nothing to do with each other. Read
+//  lazily, since the login is not known when this module is first imported.
+let pendingFriends = null;
+let pendingFriendsKey = null;
+
+function storageKey() {
+  const login = rs.loginKey || {};
+  return 'rs-webui-pending-friends:' + (login.url || '') + '|' + (login.username || '');
+}
+
+function loadPendingFriends() {
+  const key = storageKey();
+  if (pendingFriends !== null && pendingFriendsKey === key) return pendingFriends;
+  pendingFriendsKey = key;
+  try {
+    pendingFriends = JSON.parse(localStorage.getItem(key) || '{}');
+  } catch (_) {
+    pendingFriends = {};
+  }
+  return pendingFriends;
 }
 
 function savePendingFriends() {
   try {
-    localStorage.setItem(PENDING_FRIENDS_KEY, JSON.stringify(pendingFriends));
+    localStorage.setItem(pendingFriendsKey || storageKey(), JSON.stringify(pendingFriends || {}));
   } catch (_) {
     // The in-memory entry still works when private browsing blocks storage.
   }
 }
+
+Data.forgetPendingFriend = function (gpgId) {
+  const pending = loadPendingFriends();
+  const key = String(gpgId || '').toLowerCase();
+  if (!key || !pending[key]) return;
+  delete pending[key];
+  delete Data.gpgDetails[key];
+  savePendingFriends();
+};
 
 function hasValidatedFingerprint(value) {
   const fingerprint = String(value || '').replace(/\s/g, '');
@@ -18406,13 +18662,15 @@ function hasValidatedFingerprint(value) {
 }
 
 Data.rememberPendingFriend = function (peerDetails) {
+  const pending = loadPendingFriends();
   const data = peerDetails || {};
   const gpgId = String(data.gpg_id || data.pgpId || '').toLowerCase();
   const sslId = String(data.id || data.sslId || '');
   if (!gpgId || !sslId) return;
   const pendingValidation = !hasValidatedFingerprint(data.fpr || data.fingerprint);
 
-  pendingFriends[gpgId] = {
+  pending[gpgId] = {
+    rememberedAt: Date.now(),
     name: data.name || (pendingValidation
       ? `Profile ID ${gpgId.toUpperCase()} (Not yet validated)`
       : `Profile ID ${gpgId.toUpperCase()}`),
@@ -18437,7 +18695,7 @@ Data.rememberPendingFriend = function (peerDetails) {
     statusTimestamp: 0,
     avatar: '',
   };
-  Data.gpgDetails[gpgId] = pendingFriends[gpgId];
+  Data.gpgDetails[gpgId] = pending[gpgId];
   savePendingFriends();
 };
 
@@ -18553,7 +18811,9 @@ Data.refreshGpgDetails = async function () {
     })
   );
 
-  Object.entries(pendingFriends).forEach(([gpgId, pending]) => {
+  const remembered = loadPendingFriends();
+  let rememberedChanged = false;
+  Object.entries(remembered).forEach(([gpgId, pending]) => {
     if (details[gpgId]) {
       const nativeFriend = details[gpgId];
       const isValidated = hasValidatedFingerprint(nativeFriend.fingerprint || pending.fingerprint);
@@ -18563,15 +18823,21 @@ Data.refreshGpgDetails = async function () {
       // RetroShare ID until the core has validated the PGP profile.
       if (!nativeFriend.name) nativeFriend.name = pending.name;
       if (isValidated) {
-        delete pendingFriends[gpgId];
-        savePendingFriends();
+        delete remembered[gpgId];
+        rememberedChanged = true;
       } else {
         nativeFriend.pendingValidation = true;
       }
-    } else {
+    } else if (Date.now() - (pending.rememberedAt || 0) < PENDING_FRIEND_TTL_MS) {
+      //  The core does not know this profile yet: keep showing the placeholder,
+      //  but only for as long as it can plausibly still be catching up.
       details[gpgId] = pending;
+    } else {
+      delete remembered[gpgId];
+      rememberedChanged = true;
     }
   });
+  if (rememberedChanged) savePendingFriends();
   Data.gpgDetails = details;
 };
 module.exports = Data;
@@ -18601,12 +18867,19 @@ const ConfirmRemove = () => {
       m(
         'button',
         {
-          onclick: () => {
-            rs.rsJsonApiRequest('/rsPeers/removeFriend', {
+          onclick: async () => {
+            //  Drop the placeholder first: refreshGpgDetails() re-injects any
+            //  remembered friend the core does not return, so removing one added
+            //  by short ID would otherwise put it straight back in the list.
+            Data.forgetPendingFriend(vnode.attrs.gpg_id);
+            //  And wait for the removal before asking for the list again, or the
+            //  refresh races the core and shows the friend as still there.
+            await rs.rsJsonApiRequest('/rsPeers/removeFriend', {
               pgpId: vnode.attrs.gpg_id,
             });
             State.selectedFriendGpgId = null;
-            Data.refreshGpgDetails().then(() => m.redraw());
+            await Data.refreshGpgDetails();
+            m.redraw();
             widget.popupMessage(m('p', 'Friend removed successfully.'));
           },
         },
@@ -21895,7 +22168,12 @@ function fetchIdDetails(gxsId, attempt = 0) {
           fetchIdDetails(gxsId, attempt + 1);
         }, 250 * (attempt + 1));
       } else {
-        State.gxsIdToDetailsMap[gxsId] = undefined;
+        //  Give up on this id, but do NOT restore `undefined`: that is the
+        //  value which makes this function fire a request, and two of the
+        //  callers sit inside a view (people_sidebar). Every redraw would then
+        //  start the whole six request chain again, forever, for any id the
+        //  core never resolves. `null` keeps the entry marked as attempted.
+        State.gxsIdToDetailsMap[gxsId] = null;
       }
     });
   }
@@ -22278,87 +22556,99 @@ function sendDistantChatMessage() {
   );
 }
 
+//  Two /rsHistory/getMessages per known identity, and a node knows hundreds of
+//  them. Fired all at once they fill the browser's six sockets and the JSON
+//  API's single service thread, so everything the user is actually waiting for
+//  -- the chat room list, an avatar, a forum -- queues behind the preload. Run
+//  them a few at a time: the same work gets done, but interactive requests keep
+//  getting a slot.
+const HISTORY_PRELOAD_CONCURRENCY = 4;
+
+function runQueued(tasks, concurrency) {
+  let next = 0;
+  const startNext = () => {
+    if (next >= tasks.length) return;
+    tasks[next++](startNext);
+  };
+  for (let i = 0; i < concurrency && i < tasks.length; i++) startNext();
+}
+
+//  `newerOnly` keeps the previous behaviour of the two callers: the distant
+//  history is the first answer and simply wins, the private one only replaces
+//  it when it carries a more recent message.
+function rememberLastHistoryMessage(gxsId, msgData, success, newerOnly) {
+  if (!success || !msgData || !msgData.msgs) return;
+  const userMsgs = msgData.msgs.filter(
+    (m) => !m.isSystem && !isSystemMsg(m.message || m.msg)
+  );
+  if (userMsgs.length === 0) return;
+
+  const last = userMsgs[userMsgs.length - 1];
+  const lastTime = last.sendTime || last.recvTime || Math.floor(Date.now() / 1000);
+  const existing = State.chatHistoryMap[gxsId];
+  if (newerOnly && existing && lastTime <= existing.lastTime) return;
+
+  State.chatHistoryMap[gxsId] = {
+    lastMsg: last.message || last.msg || '',
+    lastTime,
+  };
+  m.redraw();
+}
+
+function historyPreloadTask(gxsId, chatPeerId, newerOnly) {
+  return (done) => rs.rsJsonApiRequest(
+    '/rsHistory/getMessages',
+    {
+      chatPeerId,
+      loadCount: 20,
+    },
+    (msgData, success) => {
+      //  done() must run whatever happens: rswebui swallows exceptions thrown
+      //  by callbacks, and a lost slot would stall the queue for good.
+      try {
+        rememberLastHistoryMessage(gxsId, msgData, success, newerOnly);
+      } finally {
+        done();
+      }
+    }
+  );
+}
+
 function preloadAllChatHistory() {
   rs.rsJsonApiRequest('/rsIdentity/getIdentitiesSummaries', {}, (data) => {
     const ids = (data && data.ids) ? data.ids : (rs.userList.users || []);
     if (!ids || ids.length === 0) return;
+
+    const tasks = [];
 
     ids.forEach((u) => {
       const gxsId = typeof u === 'object' ? u.mGroupId : u;
       if (!gxsId) return;
 
       // Check Distant Chat History (type: 2 - TYPE_PRIVATE_DISTANT)
-      const distantPeerId = {
+      tasks.push(historyPreloadTask(gxsId, {
         broadcast_status_peer_id: '00000000000000000000000000000000',
         type: 2, // TYPE_PRIVATE_DISTANT
         peer_id: '00000000000000000000000000000000',
         distant_chat_id: gxsId,
         lobby_id: { xstr64: '0' },
-      };
-
-      rs.rsJsonApiRequest(
-        '/rsHistory/getMessages',
-        {
-          chatPeerId: distantPeerId,
-          loadCount: 20,
-        },
-        (msgData, success) => {
-          if (success && msgData && msgData.msgs) {
-            const userMsgs = msgData.msgs.filter(
-              (m) => !m.isSystem && !isSystemMsg(m.message || m.msg)
-            );
-            if (userMsgs.length > 0) {
-              const last = userMsgs[userMsgs.length - 1];
-              State.chatHistoryMap[gxsId] = {
-                lastMsg: last.message || last.msg || '',
-                lastTime: last.sendTime || last.recvTime || Math.floor(Date.now() / 1000),
-              };
-              m.redraw();
-            }
-          }
-        }
-      );
+      }, false));
 
       // Also check Private Chat History (type: 1) if PGP ID is known
       const details = State.gxsIdToDetailsMap[gxsId];
       const pgpId = details ? details.mPgpId : (typeof u === 'object' ? u.mPgpId : null);
       if (pgpId && pgpId !== '0000000000000000') {
-        const privatePeerId = {
+        tasks.push(historyPreloadTask(gxsId, {
           broadcast_status_peer_id: '00000000000000000000000000000000',
           type: 1, // PRIVATE
           peer_id: pgpId,
           distant_chat_id: '00000000000000000000000000000000',
           lobby_id: { xstr64: '0' },
-        };
-
-        rs.rsJsonApiRequest(
-          '/rsHistory/getMessages',
-          {
-            chatPeerId: privatePeerId,
-            loadCount: 20,
-          },
-          (msgData, success) => {
-            if (success && msgData && msgData.msgs) {
-              const userMsgs = msgData.msgs.filter(
-                (m) => !m.isSystem && !isSystemMsg(m.message || m.msg)
-              );
-              if (userMsgs.length > 0) {
-                const last = userMsgs[userMsgs.length - 1];
-                const existing = State.chatHistoryMap[gxsId];
-                const lastTime = last.sendTime || last.recvTime || Math.floor(Date.now() / 1000);
-                if (!existing || lastTime > existing.lastTime) {
-                  State.chatHistoryMap[gxsId] = {
-                    lastMsg: last.message || last.msg || '',
-                    lastTime,
-                  };
-                  m.redraw();
-                }
-              }
-            }
-          }
-        );
+        }, true));
       }
     });
+
+    runQueued(tasks, HISTORY_PRELOAD_CONCURRENCY);
   });
 }
 

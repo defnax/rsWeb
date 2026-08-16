@@ -2,11 +2,16 @@ package org.retroshare.rsweb
 
 import android.annotation.SuppressLint
 import android.Manifest
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.view.View
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -15,6 +20,7 @@ import android.webkit.WebViewClient
 import android.webkit.JavascriptInterface
 import android.widget.ProgressBar
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -30,6 +36,18 @@ class WebUIActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
     private var lastServiceRestartAt = 0L
+    private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
+
+    private val fileChooserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val selectedFiles = WebChromeClient.FileChooserParams.parseResult(
+            result.resultCode,
+            result.data
+        )
+        fileChooserCallback?.onReceiveValue(selectedFiles)
+        fileChooserCallback = null
+    }
 
     companion object {
         const val WEBUI_LOCAL_URL = "http://127.0.0.1:9092/index.html"
@@ -55,6 +73,7 @@ class WebUIActivity : AppCompatActivity() {
         RetroShareService.start(this)
         setupWebViewSettings()
         setupWebViewClient()
+        setupFileChooser()
 
         loadWebInterface()
     }
@@ -151,6 +170,43 @@ class WebUIActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Android WebView does not open a picker for HTML file inputs by itself.
+     * Forward WebUI file requests to Android's document picker and return the
+     * selected content URI(s) to the page.
+     */
+    private fun setupFileChooser() {
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean {
+                fileChooserCallback?.onReceiveValue(null)
+                fileChooserCallback = filePathCallback
+
+                return try {
+                    val pickerIntent = fileChooserParams?.createIntent()
+                        ?: Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "*/*"
+                        }
+                    fileChooserLauncher.launch(pickerIntent)
+                    true
+                } catch (error: ActivityNotFoundException) {
+                    fileChooserCallback?.onReceiveValue(null)
+                    fileChooserCallback = null
+                    Toast.makeText(
+                        this@WebUIActivity,
+                        "No file picker is available on this device",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    true
+                }
+            }
+        }
+    }
+
     private fun loadWebInterface() {
         webView.loadUrl(WEBUI_ASSET_URL)
     }
@@ -161,5 +217,11 @@ class WebUIActivity : AppCompatActivity() {
         } else {
             super.onBackPressed()
         }
+    }
+
+    override fun onDestroy() {
+        fileChooserCallback?.onReceiveValue(null)
+        fileChooserCallback = null
+        super.onDestroy()
     }
 }

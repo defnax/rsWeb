@@ -137,11 +137,11 @@ const logo = () => {
 
 const webhelpConfirm = () => {
   return {
-    view: () => [
+    view: () => m('.web-help-confirmation', [
       m('h3', 'Confirmation'),
       m('hr'),
       m('p', 'Do you want this link to be handled by your system?'),
-      m('p', 'https://retrosharedocs.readthedocs.io/en/latest/'),
+      m('.web-help-confirmation__url', 'https://retrosharedocs.readthedocs.io/en/latest/'),
       m('p', 'Make sure this link has not been forged to drag you to a malicious website.'),
       m(
         'button',
@@ -155,7 +155,7 @@ const webhelpConfirm = () => {
         },
         'Ok'
       ),
-    ],
+    ]),
   };
 };
 
@@ -166,7 +166,7 @@ const webhelp = () => {
         '.webhelp',
         {
           onclick: () => {
-            widget.popupMessage(m(webhelpConfirm));
+            widget.popupMessage(m(webhelpConfirm), 'web-help-modal');
           },
         },
         [m('i.fas.fa-globe-europe'), m('p', 'Open Web Help')]
@@ -908,7 +908,7 @@ const navbar = () => {
                       ? 'Connected to RetroShare Core'
                       : 'Connection Lost',
                   }),
-                  m('span.webui-version', { style: { fontSize: '0.7em' } }, 'v145'),
+                  m('span.webui-version', { style: { fontSize: '0.7em' } }, 'v151'),
                   m('i.fas.fa-sync-alt.refresh-icon', {
                     style: { cursor: 'pointer', fontSize: '0.8em' },
                     onclick: () => window.location.reload(true),
@@ -1030,7 +1030,7 @@ const MobileStatus = () => {
               m('small', statusbar.formatBytes(state.totalOut)),
             ]),
           ]),
-          m('.mobile-status-sheet__version', 'WebUI v145'),
+          m('.mobile-status-sheet__version', 'WebUI v151'),
         ])),
       ];
     },
@@ -8377,8 +8377,20 @@ function renderUserTooltip(gxsId, name) {
   ]);
 }
 
-function pollHashStatus(localpath) {
+//  Hashing a large file takes minutes, so there is no deadline to enforce here.
+//  What the poll must not do is keep asking at full speed: it backs off from one
+//  second towards ten, which is still prompt for a small file and costs a
+//  request every ten seconds for a big one -- each of them a fresh connection,
+//  the JSON API answers `Connection: close`.
+const HASH_POLL_START_MS = 1000;
+const HASH_POLL_MAX_MS = 10000;
+
+function pollHashStatus(localpath, delay = HASH_POLL_START_MS) {
   rs.rsJsonApiRequest('/rsFiles/ExtraFileStatus', { localpath }, (data) => {
+    //  Give up quietly if the user cancelled or left in the meantime: this
+    //  chain lives in a setTimeout, not in the component.
+    if (!ChatHubState.isHashing || ChatHubState.attachPath !== localpath) return;
+
     if (data && data.retval && data.info && data.info.hash && data.info.hash !== '0000000000000000000000000000000000000000') {
       const info = data.info;
       const sizeNum = info.size.xint64 || parseInt(info.size.xstr64) || info.size;
@@ -8395,11 +8407,23 @@ function pollHashStatus(localpath) {
       ChatHubState.attachPath = '';
       m.redraw();
     } else {
-      if (ChatHubState.isHashing) {
-        setTimeout(() => pollHashStatus(localpath), 1000);
-      }
+      setTimeout(
+        () => pollHashStatus(localpath, Math.min(delay * 2, HASH_POLL_MAX_MS)),
+        delay
+      );
     }
   });
+}
+
+//  The core has no way of telling us that hashing failed -- ftExtraList drops
+//  the file silently -- so a file that exists but cannot be read leaves this
+//  poll running for ever. Hence: stopping must always be possible from the
+//  dialog, and this is the single place that does it.
+function stopHashing() {
+  ChatHubState.isHashing = false;
+  ChatHubState.attachPath = '';
+  ChatHubState.attachBrowseHint = false;
+  ChatHubState.hashingError = '';
 }
 
 // ************************* views ****************************
@@ -8536,6 +8560,13 @@ const ChatConversationView = () => {
     },
     onremove: () => {
       document.removeEventListener('click', onDocClick, true);
+      //  The poll writes its file link into the textarea of this very view, so
+      //  once the view is gone the answer has nowhere to land: leaving it
+      //  running would only keep asking for a result nobody can use.
+      if (ChatHubState.isHashing) {
+        ChatHubState.showAttachModal = false;
+        stopHashing();
+      }
     },
     view: () => {
       const chatType = ChatLobbyModel.currentLobby && ChatLobbyModel.currentLobby.chatType;
@@ -8716,11 +8747,9 @@ const ChatConversationView = () => {
           ),
           ChatHubState.showAttachModal && m('.attach-modal-overlay', {
             onclick: (e) => {
-              if (e.target === e.currentTarget && !ChatHubState.isHashing) {
+              if (e.target === e.currentTarget) {
                 ChatHubState.showAttachModal = false;
-                ChatHubState.attachPath = '';
-                ChatHubState.attachBrowseHint = false;
-                ChatHubState.hashingError = '';
+                stopHashing();
               }
             }
           }, [
@@ -8794,6 +8823,9 @@ const ChatConversationView = () => {
                   disabled: ChatHubState.isHashing || !ChatHubState.attachPath.trim() || ChatHubState.attachBrowseHint,
                   onclick: () => {
                     const path = ChatHubState.attachPath.trim();
+                    //  Normalised, because the poll below identifies its own run
+                    //  by comparing this against the path it was started with.
+                    ChatHubState.attachPath = path;
                     ChatHubState.isHashing = true;
                     ChatHubState.hashingError = '';
                     m.redraw();
@@ -8814,14 +8846,11 @@ const ChatConversationView = () => {
                   }
                 }, [m('i.fas.fa-link'), m('span', ' Attach')]),
                 m('button.btn.red', {
-                  disabled: ChatHubState.isHashing,
                   onclick: () => {
                     ChatHubState.showAttachModal = false;
-                    ChatHubState.attachPath = '';
-                    ChatHubState.attachBrowseHint = false;
-                    ChatHubState.hashingError = '';
+                    stopHashing();
                   }
-                }, 'Cancel')
+                }, ChatHubState.isHashing ? 'Stop' : 'Cancel')
               ])
             ])
           ]),
@@ -10245,6 +10274,13 @@ function htmlToText(text) {
   );
 }
 
+//  data: covers what the web UI itself sends (a compressed JPEG data URI) and
+//  what any other client embeds the same way. Everything else -- http, https,
+//  file, anything exotic -- is a fetch to a third party.
+function isEmbeddedImageSrc(src) {
+  return /^data:image\//i.test(String(src).trim());
+}
+
 function renderChatMessage(rawText) {
   if (!rawText) return '';
 
@@ -10266,7 +10302,14 @@ function renderChatMessage(rawText) {
       }
 
       const src = match[1];
-      if (src) {
+      //  A message is written by whoever is at the other end of the tunnel, and
+      //  an <img> pointing at a host of their choosing makes this browser fetch
+      //  it: the reader's address handed over, and a read receipt with it, on a
+      //  conversation whose whole point is that neither is knowable. Embedded
+      //  pictures travel as data: URIs; anything else is shown as the text it is.
+      if (src && !isEmbeddedImageSrc(src)) {
+        parts.push(renderTextWithEmoji(`[remote image not loaded: ${src}]`));
+      } else if (src) {
         parts.push(
           m('img.chat-embedded-image', {
             src,
@@ -10305,7 +10348,7 @@ function renderChatMessage(rawText) {
   }
 
   // 2. Check for raw data:image/... base64 URLs
-  if (rawText.trim().startsWith('data:image/')) {
+  if (isEmbeddedImageSrc(rawText)) {
     const src = rawText.trim();
     return m('img.chat-embedded-image', {
       src,
@@ -20286,6 +20329,9 @@ const {
   startStatusPolling,
   stopStatusPolling,
   initializeDistantChat,
+  getDistantChatSession,
+  drainBufferedChatMessages,
+  receiveDistantChatMessage,
 } = require('people/people_state');
 
 const PeopleSidebar = require('people/people_sidebar');
@@ -20304,9 +20350,26 @@ const PeopleLayout = () => {
   return {
     oninit: (vnode) => {
       syncFilter(vnode.attrs.tab);
-      Data.refreshGpgDetails().then(() => m.redraw());
+      //  The friend list carries the locations the direct chat history is keyed
+      //  by, so the preload only has its full candidate set once it landed.
+      Data.refreshGpgDetails().then(() => {
+        preloadAllChatHistory();
+        m.redraw();
+      });
       loadGxsIdentities();
-      loadOwnGxsIds().then(() => preloadAllChatHistory());
+      loadOwnGxsIds().then(() => {
+        preloadAllChatHistory();
+        //  "Start private chat" from a chat room routes here with the chat tab
+        //  preselected, but nothing ever opened the tunnel: the pane sat on its
+        //  Connecting spinner for good. That intent is explicit, so it is
+        //  honoured -- once the own identities needed to open a tunnel are in.
+        if (State.pendingChatOpen && State.pendingChatOpen === State.selectedId) {
+          State.pendingChatOpen = null;
+          initializeDistantChat();
+        } else {
+          State.pendingChatOpen = null;
+        }
+      });
       stopWatchingOwnIds = peopleUtil.watchOwnIds((ids) => {
         State.ownGxsIds = ids || [];
         if (!peopleUtil.isUsableIdentityId(State.selectedId)) {
@@ -20318,64 +20381,17 @@ const PeopleLayout = () => {
         }
         m.redraw();
       });
-      preloadAllChatHistory();
       window.addEventListener('click', dismissMenu);
 
       // Register for chatEvents to receive live incoming messages
-      rs.events[15].notify = (chatMessage) => {
-        const msgCid = chatMessage.chat_id;
-        if (msgCid && msgCid.type === 2) {
-          const msgPid = rs.idToHex(msgCid.distant_chat_id);
-
-          // Find active session matching this distant chat PID
-          let session = null;
-          let targetGxsId = null;
-          Object.keys(State.activeDistantChats || {}).forEach((id) => {
-            if (State.activeDistantChats[id] && State.activeDistantChats[id].pid === msgPid) {
-              session = State.activeDistantChats[id];
-              targetGxsId = id;
-            }
-          });
-
-          if (session) {
-            const isNearDuplicate = session.messages.some(
-              (m) => (m.msg || m.message) === chatMessage.msg && Math.abs(m.sendTime - chatMessage.sendTime) < 5
-            );
-            if (!isNearDuplicate) {
-              session.messages.push(chatMessage);
-              session.messages.sort((a, b) => a.sendTime - b.sendTime);
-              if (targetGxsId) {
-                State.chatHistoryMap[targetGxsId] = {
-                  lastMsg: chatMessage.msg || chatMessage.message || '',
-                  lastTime: chatMessage.sendTime || Math.floor(Date.now() / 1000),
-                };
-              }
-              m.redraw();
-              if (State.selectedId === targetGxsId) {
-                setTimeout(() => {
-                  const element = document.querySelector('.chat-messages');
-                  if (element) element.scrollTop = element.scrollHeight;
-                }, 100);
-              }
-            }
-          } else if (State.chatPid && msgPid === State.chatPid) {
-            const isNearDuplicate = State.chatMessages.some(
-              (m) => (m.msg || m.message) === chatMessage.msg && Math.abs(m.sendTime - chatMessage.sendTime) < 5
-            );
-            if (!isNearDuplicate) {
-              State.chatMessages.push(chatMessage);
-              State.chatMessages.sort((a, b) => a.sendTime - b.sendTime);
-              m.redraw();
-              setTimeout(() => {
-                const element = document.querySelector('.chat-messages');
-                if (element) element.scrollTop = element.scrollHeight;
-              }, 100);
-            }
-          }
-        }
-      };
+      rs.events[15].notify = receiveDistantChatMessage;
 
       if (State.chatPid && !State.chatDisconnected) {
+        //  Messages received while the tab was unmounted sit in the event
+        //  queue buffer: pick them up before the first redraw.
+        if (State.selectedId) {
+          drainBufferedChatMessages(getDistantChatSession(State.selectedId));
+        }
         startStatusPolling();
       }
     },
@@ -20496,6 +20512,7 @@ PeopleLayout.setSelectedId = (id, activeTab = 'details', showCompose = false) =>
   State.activeFilter = filter;
   State.selectedId = id;
   State.activeTab = activeTab;
+  State.pendingChatOpen = activeTab === 'chat' ? id : null;
   State.mobilePane = 'detail';
   if (showCompose) {
     State.showMailCompose = true;
@@ -20505,6 +20522,86 @@ PeopleLayout.setSelectedId = (id, activeTab = 'details', showCompose = false) =>
 };
 
 module.exports = PeopleLayout;
+ 
+}); 
+require.register("people/people_attach", function(exports, require, module) { 
+const m = require('mithril');
+const rs = require('rswebui');
+const { State, setChatDraft } = require('people/people_state');
+
+//  Attaching a file means publishing it as an extra file and sending the
+//  retroshare:// link the core answers with. What the paperclip used to do was
+//  paste the path itself into the message, so the peer received "/home/me/x.iso"
+//  and nothing else. The chat page does this properly; this is the same flow,
+//  without its ChatHubState.
+//
+//  Hashing a large file takes minutes, so there is no deadline. The poll just
+//  must not ask at full speed: it backs off from one second towards ten, each
+//  request being a fresh connection since the JSON API answers Connection:close.
+const HASH_POLL_START_MS = 1000;
+const HASH_POLL_MAX_MS = 10000;
+
+function pollHashStatus(localpath, delay = HASH_POLL_START_MS) {
+  rs.rsJsonApiRequest('/rsFiles/ExtraFileStatus', { localpath }, (data) => {
+    //  Cancelled, or another file started in the meantime: this chain lives in
+    //  a setTimeout, not in a component, so it has to check for itself.
+    if (!State.isHashing || State.attachPath !== localpath) return;
+
+    const info = data && data.retval ? data.info : null;
+    if (info && info.hash && info.hash !== '0000000000000000000000000000000000000000') {
+      const size = info.size && typeof info.size === 'object'
+        ? (info.size.xint64 || parseInt(info.size.xstr64) || 0)
+        : Number(info.size) || 0;
+      const link = `<a href="retroshare://file?name=${encodeURIComponent(info.name)}`
+        + `&size=${size}&hash=${info.hash}">${info.name}</a> (${rs.formatBytes(size)})`;
+
+      const draft = State.chatInputMsg || '';
+      setChatDraft(draft ? draft + '\n' + link : link);
+      stopAttachHash();
+      m.redraw();
+      return;
+    }
+
+    setTimeout(
+      () => pollHashStatus(localpath, Math.min(delay * 2, HASH_POLL_MAX_MS)),
+      delay
+    );
+  });
+}
+
+//  The core drops a file it failed to hash without a word -- ftExtraList only
+//  records successes -- so a file that exists but cannot be read would leave
+//  this polling for ever. Stopping must therefore always be possible.
+function stopAttachHash() {
+  State.isHashing = false;
+  State.attachPath = '';
+}
+
+function startAttachHash(path) {
+  const localpath = String(path || '').trim();
+  if (!localpath) return;
+
+  State.attachPath = localpath;
+  State.isHashing = true;
+  State.attachError = '';
+  m.redraw();
+
+  rs.rsJsonApiRequest(
+    '/rsFiles/ExtraFileHash',
+    { localpath, period: 86400 * 7, flags: 0 },
+    (data, success) => {
+      if (success && data && data.retval) {
+        pollHashStatus(localpath);
+        return;
+      }
+      stopAttachHash();
+      State.attachError = 'Could not hash that file. Check the path — it is read on the RetroShare node, not in the browser.';
+      m.redraw();
+    }
+  );
+}
+
+module.exports = { startAttachHash, stopAttachHash };
  
 }); 
 require.register("people/people_chat_tab", function(exports, require, module) { 
@@ -20517,15 +20614,23 @@ const {
   getStatusTooltip,
   initializeDistantChat,
   sendDistantChatMessage,
-  stopStatusPolling,
-  loadAllHistoryForSelectedPeer,
+  leaveDistantChat,
+  setChatDraft,
+  switchChatIdentity,
 } = require('people/people_state');
+const { startAttachHash, stopAttachHash } = require('people/people_attach');
 const { renderChatMessage } = require('chat/chat_state');
 const chatEmoji = require('chat/chat_emoji');
 const peopleUtil = require('people/people_util');
 const HistoryBrowserModal = require('people/people_history');
 
-// Mirroring C++ Distant Chat packet size limit (200KB)
+//  Distant chat has no size limit of its own -- getMaxMessageSecuritySize()
+//  answers 0 for it and the core slices anything past 15000 characters -- but a
+//  photo straight from a phone is several megabytes of base64 crawling through a
+//  turtle tunnel. So the picture is scaled into a 800x600 box and its quality
+//  stepped down until it fits in a couple of hundred kilobytes.
+const MAX_IMAGE_CHARS = 200000;
+
 function formatChatImage(file, callback) {
   if (!file) return;
   const reader = new FileReader();
@@ -20553,15 +20658,15 @@ function formatChatImage(file, callback) {
       // Dynamically step down JPEG quality until base64 string is under 190,000 characters (190KB)
       let quality = 0.85;
       let dataUrl = canvas.toDataURL('image/jpeg', quality);
-      while (dataUrl.length > 190000 && quality > 0.20) {
+      while (dataUrl.length > MAX_IMAGE_CHARS * 0.95 && quality > 0.20) {
         quality -= 0.10;
         dataUrl = canvas.toDataURL('image/jpeg', quality);
       }
 
-      if (dataUrl.length <= 200000) {
+      if (dataUrl.length <= MAX_IMAGE_CHARS) {
         callback(`<img src="${dataUrl}" />`);
       } else {
-        alert('Image file is too large to send over Distant Chat 200KB packet size limit.');
+        alert('That picture stays too heavy once compressed to be worth sending over a distant chat tunnel.');
         callback(null);
       }
     };
@@ -20572,7 +20677,36 @@ function formatChatImage(file, callback) {
 }
 
 const ChatTab = () => {
+  let showAttachmentMenu = false;
+
+  function onDocClick(e) {
+    if (showAttachmentMenu && !e.target.closest('.mobile-chat-attachment')) {
+      showAttachmentMenu = false;
+      m.redraw();
+    }
+  }
+
+  function attachFileLink() {
+    if (State.isHashing) return;
+    //  The path is read by the RetroShare node, not by the browser, so a file
+    //  picker would name something the core cannot open.
+    const path = prompt('Path of the file to share, as seen by the RetroShare node:');
+    if (path && path.trim()) startAttachHash(path);
+  }
+
+  function attachImage(file) {
+    if (!file) return;
+    formatChatImage(file, (imgTag) => {
+      if (imgTag) {
+        setChatDraft((State.chatInputMsg || '') + imgTag);
+        m.redraw();
+      }
+    });
+  }
+
   return {
+    oncreate: () => document.addEventListener('click', onDocClick, true),
+    onremove: () => document.removeEventListener('click', onDocClick, true),
     view: () => {
       fetchIdDetails(State.selectedId);
       const details = State.selectedId ? State.gxsIdToDetailsMap[State.selectedId] : null;
@@ -20592,7 +20726,9 @@ const ChatTab = () => {
         return m('.chat-warning', [
           m('i.fas.fa-unlink', { style: 'font-size: 2rem; color: #ef4444; margin-bottom: 1rem;' }),
           m('h4', 'Conversation Ended'),
-          m('p', 'You have closed the distant chat tunnel. Click below to reconnect.'),
+          m('p', State.chatCloseFoundNothing
+            ? 'The tunnel was already gone: the core had no connection left to close. Click below to open a new one.'
+            : 'You have closed the distant chat tunnel. Click below to reconnect.'),
           m('button.blue', {
             style: 'margin-top: 1rem; padding: 0.5rem 1.5rem; border-radius: 0.375rem; border: none; font-weight: 600; cursor: pointer;',
             onclick: () => initializeDistantChat(),
@@ -20641,10 +20777,7 @@ const ChatTab = () => {
                   m('select', {
                     style: 'padding: 0.25rem 0.5rem; border-radius: 0.25rem; border: 1px solid #cbd5e1; outline: none; background: #f8fafc; font-weight: 600;',
                     value: ownId,
-                    onchange: (e) => {
-                      State.selectedOwnGxsIdForChat = e.target.value;
-                      initializeDistantChat(true);
-                    },
+                    onchange: (e) => switchChatIdentity(e.target.value),
                   }, State.ownGxsIds.map((id) => m('option', { value: id }, rs.userList.username(id)))),
                 ]);
               })(),
@@ -20652,10 +20785,10 @@ const ChatTab = () => {
             m('button.blue.history-btn', {
               style: 'padding: 0.25rem 0.75rem; border-radius: 0.25rem; font-size: 0.85rem; display: flex; align-items: center; gap: 0.35rem; border: none; cursor: pointer; background-color: #3b82f6; color: #ffffff; font-weight: 600;',
               title: 'View all past chat history with this contact',
+              //  The modal loads the history when it opens; asking here too
+              //  ran the whole "every message ever" query twice.
               onclick: () => {
                 State.showHistoryModal = true;
-                State.historySearchQuery = '';
-                loadAllHistoryForSelectedPeer();
               },
             }, [
               m('i.fas.fa-history', { style: 'color: #ffffff;' }),
@@ -20671,17 +20804,11 @@ const ChatTab = () => {
                       pid: State.chatPid,
                     },
                     (data, success) => {
-                      if (success) {
-                        if (State.selectedId && State.activeDistantChats[State.selectedId]) {
-                          delete State.activeDistantChats[State.selectedId];
-                        }
-                        State.chatPid = null;
-                        State.chatMessages = [];
-                        State.distantChatStatus = null;
-                        State.chatDisconnected = true;
-                        stopStatusPolling();
-                        m.redraw();
-                      }
+                      //  `success` is the HTTP status, not the answer: the core
+                      //  says in retval whether it had anything to close. Taking
+                      //  200 for a closed tunnel is how this button could report
+                      //  a conversation as ended while the tunnel lived on.
+                      leaveDistantChat(Boolean(success && data && data.retval));
                     }
                   );
                 }
@@ -20734,20 +20861,70 @@ const ChatTab = () => {
               }),
         ]),
 
+        //  Hashing has no deadline and the core never reports a failure, so
+        //  the wait must be visible and must always have a way out.
+        (State.isHashing || State.attachError) && m('.chat-attach-status', {
+          style: 'display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; border-top: 1px solid #cbd5e1; background: #f8fafc; font-size: 0.85rem; color: #475569;',
+        }, State.isHashing
+          ? [
+              m('i.fas.fa-spinner.fa-spin', { style: 'color: #3b82f6;' }),
+              m('span', { style: 'flex: 1; word-break: break-all;' }, `Hashing ${State.attachPath}…`),
+              m('button.btn.red', {
+                style: 'padding: 0.2rem 0.6rem; border-radius: 0.25rem; border: none; cursor: pointer; background-color: #ef4444; color: #ffffff;',
+                onclick: () => stopAttachHash(),
+              }, 'Stop'),
+            ]
+          : [
+              m('i.fas.fa-exclamation-triangle', { style: 'color: #ef4444;' }),
+              m('span', { style: 'flex: 1;' }, State.attachError),
+              m('button.btn', {
+                style: 'padding: 0.2rem 0.6rem; border-radius: 0.25rem; border: 1px solid #cbd5e1; cursor: pointer; background: #ffffff;',
+                onclick: () => { State.attachError = ''; },
+              }, 'Dismiss'),
+            ]),
+
         m('.chat-input-area', { style: 'display: flex; align-items: center; gap: 0.5rem; padding: 0.75rem; background: #ffffff; border-top: 1px solid #cbd5e1;' }, [
-          m('button.chat-hub-action-btn', {
+          m('button.chat-hub-action-btn.desktop-chat-attachment', {
             disabled: !canTalk,
             style: !canTalk ? 'opacity: 0.5; cursor: not-allowed;' : '',
             title: 'Attach file link',
-            onclick: () => {
-              const path = prompt('Enter file path to attach as Retroshare link:');
-              if (path && path.trim()) {
-                const val = State.chatInputMsg || '';
-                State.chatInputMsg = val ? val + '\n' + path.trim() : path.trim();
-                m.redraw();
-              }
-            }
+            onclick: attachFileLink,
           }, m('i.fas.fa-paperclip')),
+
+          m('.mobile-chat-attachment', [
+            m('button.chat-hub-action-btn', {
+              disabled: !canTalk,
+              style: !canTalk ? 'opacity: 0.5; cursor: not-allowed;' : '',
+              title: 'Add attachment',
+              onclick: (e) => {
+                e.stopPropagation();
+                showAttachmentMenu = !showAttachmentMenu;
+                State.showEmojiPicker = false;
+              },
+            }, m('i.fas.fa-paperclip')),
+            showAttachmentMenu && m('.mobile-chat-attachment__menu', [
+              m('button.mobile-chat-attachment__option', {
+                type: 'button',
+                onclick: () => {
+                  showAttachmentMenu = false;
+                  attachFileLink();
+                },
+              }, [m('i.fas.fa-file'), ' File']),
+              m('label.mobile-chat-attachment__option', [
+                m('i.fas.fa-image'),
+                ' Picture',
+                m('input[type=file][accept=image/*]', {
+                  style: 'display: none;',
+                  disabled: !canTalk,
+                  onchange: (e) => {
+                    attachImage(e.target.files && e.target.files[0]);
+                    showAttachmentMenu = false;
+                    e.target.value = '';
+                  },
+                }),
+              ]),
+            ]),
+          ]),
 
           m('.emoji-picker-wrapper', { style: 'position: relative;' }, [
             m('button.chat-hub-action-btn', {
@@ -20761,14 +20938,14 @@ const ChatTab = () => {
             }, m('i.fas.fa-smile')),
             State.showEmojiPicker && m(chatEmoji.EmojiPicker, {
               onSelect: (emoji) => {
-                State.chatInputMsg = (State.chatInputMsg || '') + emoji;
+                setChatDraft((State.chatInputMsg || '') + emoji);
                 State.showEmojiPicker = false;
                 m.redraw();
               }
             }),
           ]),
 
-          m('label.chat-hub-action-btn', {
+          m('label.chat-hub-action-btn.desktop-chat-attachment', {
             title: 'Send image',
             style: `cursor: ${canTalk ? 'pointer' : 'not-allowed'}; opacity: ${canTalk ? 1 : 0.5};`,
           }, [
@@ -20778,13 +20955,7 @@ const ChatTab = () => {
               disabled: !canTalk,
               onchange: (e) => {
                 if (!e.target.files || !e.target.files[0]) return;
-                const file = e.target.files[0];
-                formatChatImage(file, (imgTag) => {
-                  if (imgTag) {
-                    State.chatInputMsg = (State.chatInputMsg || '') + imgTag;
-                    m.redraw();
-                  }
-                });
+                attachImage(e.target.files[0]);
                 e.target.value = '';
               }
             })
@@ -20796,7 +20967,7 @@ const ChatTab = () => {
             value: State.chatInputMsg,
             style: 'flex: 1; resize: none; border: 1px solid #cbd5e1; border-radius: 6px; padding: 0.5rem; font-family: inherit; font-size: 0.9rem; outline: none; min-height: 40px; max-height: 120px;',
             oninput: (e) => {
-              State.chatInputMsg = e.target.value;
+              setChatDraft(e.target.value);
             },
             onpaste: (e) => {
               if (!canTalk) return;
@@ -20808,7 +20979,7 @@ const ChatTab = () => {
                   const blob = items[i].getAsFile();
                   formatChatImage(blob, (imgTag) => {
                     if (imgTag) {
-                      State.chatInputMsg = (State.chatInputMsg || '') + imgTag;
+                      setChatDraft((State.chatInputMsg || '') + imgTag);
                       m.redraw();
                     }
                   });
@@ -20853,6 +21024,7 @@ const { EditIdentity, DeleteIdentity } = ownIdsLayout;
 const {
   State,
   fetchIdDetails,
+  refreshSelectedIdDetails,
   getSafeAvatar,
   get64Num,
   createUsageString,
@@ -20862,6 +21034,7 @@ const {
 
 const DetailsTab = () => {
   return {
+    oninit: () => refreshSelectedIdDetails(),
     view: () => {
       fetchIdDetails(State.selectedId);
       const details = State.selectedId ? State.gxsIdToDetailsMap[State.selectedId] : null;
@@ -21010,23 +21183,26 @@ const DetailsTab = () => {
             m('.info-label', 'GXS ID'),
             m('.info-value', details.mId),
             m('.info-label', 'Type'),
-            m('.info-value', details.mFlags === 14 ? 'Signed ID' : 'Anonymous ID'),
+            //  mFlags is a bitfield: RS_IDENTITY_FLAGS_PGP_LINKED is 0x2.
+            //  Comparing the whole word against 14 -- PGP_LINKED | PGP_KNOWN |
+            //  IS_OWN_ID -- only ever matched our own signed identities, so
+            //  every signed identity of somebody else read "Anonymous".
+            m('.info-value', (details.mFlags & 0x2) ? 'Signed ID' : 'Anonymous ID'),
             m('.info-label', 'Owner Node GPG'),
             m('.info-value', pgpId && pgpId !== '0000000000000000' ? pgpId : 'None'),
             m('.info-label', 'Created On'),
-            m(
-              '.info-value',
-              typeof details.mPublishTS === 'object'
-                ? new Date(details.mPublishTS.xint64 * 1000).toLocaleString()
-                : 'Unknown'
-            ),
+            //  get64Num exists for these: a 64 bit field arrives as
+            //  {xint64, xstr64}, and large values carry xstr64 alone -- reading
+            //  .xint64 straight then dates the identity to "Invalid Date".
+            m('.info-value', (() => {
+              const ts = get64Num(details.mPublishTS);
+              return ts > 0 ? new Date(ts * 1000).toLocaleString() : 'Unknown';
+            })()),
             m('.info-label', 'Last Used'),
-            m(
-              '.info-value',
-              typeof details.mLastUsageTS === 'object'
-                ? new Date(details.mLastUsageTS.xint64 * 1000).toLocaleDateString()
-                : 'Unknown'
-            ),
+            m('.info-value', (() => {
+              const ts = get64Num(details.mLastUsageTS);
+              return ts > 0 ? new Date(ts * 1000).toLocaleDateString() : 'Unknown';
+            })()),
             m('.info-label', 'Friend votes'),
             m('.info-value', details.mReputation && (details.mReputation.mFriendsPositiveVotes > 0 || details.mReputation.mFriendsNegativeVotes > 0)
               ? `${details.mReputation.mFriendsPositiveVotes} positive, ${details.mReputation.mFriendsNegativeVotes} negative`
@@ -21083,32 +21259,48 @@ const rs = require('rswebui');
 const peopleState = require('people/people_state');
 
 const HistoryBrowserModal = () => {
+  //  This modal is mounted with its page and draws nothing until it is asked
+  //  for, so oninit is the moment the *conversation* opens, not the moment the
+  //  browser does. Loading there meant every chat opening ran "give me every
+  //  message ever stored" -- loadCount 0 -- for a panel nobody had asked for.
+  let wasOpen = false;
+
+  const loadOnOpen = (vnode) => {
+    const chatState = require('chat/chat_state');
+    const isRoom = vnode.attrs && vnode.attrs.isRoom;
+    const externalState = vnode.attrs && vnode.attrs.state;
+
+    if (externalState) {
+      externalState.historySearchQuery = '';
+      return;
+    }
+    if (isRoom) {
+      chatState.ChatHubState.historySearchQuery = '';
+      const lobbyId = chatState.ChatLobbyModel.currentLobby
+        ? rs.idToHex(chatState.ChatLobbyModel.currentLobby.lobby_id)
+        : null;
+      if (lobbyId) chatState.ChatLobbyModel.loadAllHistoryForRoom(lobbyId);
+      return;
+    }
+    peopleState.State.historySearchQuery = '';
+    peopleState.loadAllHistoryForSelectedPeer();
+  };
+
   return {
-    oninit: (vnode) => {
-      if (vnode.attrs && vnode.attrs.state) {
-        vnode.attrs.state.historySearchQuery = '';
-        return;
-      }
-      const chatState = require('chat/chat_state');
-      const isRoom = vnode.attrs && vnode.attrs.isRoom;
-      if (isRoom) {
-        chatState.ChatHubState.historySearchQuery = '';
-        const lobbyId = chatState.ChatLobbyModel.currentLobby ? rs.idToHex(chatState.ChatLobbyModel.currentLobby.lobby_id) : null;
-        if (lobbyId) {
-          chatState.ChatLobbyModel.loadAllHistoryForRoom(lobbyId);
-        }
-      } else {
-        peopleState.State.historySearchQuery = '';
-        peopleState.loadAllHistoryForSelectedPeer();
-      }
-    },
     view: (vnode) => {
       const chatState = require('chat/chat_state');
       const isRoom = vnode.attrs && vnode.attrs.isRoom;
       const externalState = vnode.attrs && vnode.attrs.state;
       const stateObj = externalState || (isRoom ? chatState.ChatHubState : peopleState.State);
 
-      if (!stateObj.showHistoryModal) return null;
+      if (!stateObj.showHistoryModal) {
+        wasOpen = false;
+        return null;
+      }
+      if (!wasOpen) {
+        wasOpen = true;
+        loadOnOpen(vnode);
+      }
 
       let name = (vnode.attrs && vnode.attrs.name) || 'Chat History';
       if (!externalState && isRoom) {
@@ -21127,13 +21319,13 @@ const HistoryBrowserModal = () => {
       });
 
       return m('.history-modal-overlay', {
-        style: 'position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background-color: rgba(15, 23, 42, 0.4); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 2000;',
+        style: 'position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; height: 100dvh; background-color: rgba(15, 23, 42, 0.4); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 2000;',
         onclick: (e) => {
           if (e.target === e.currentTarget) stateObj.showHistoryModal = false;
         }
       }, [
         m('.history-modal', {
-          style: 'background: #ffffff; border-radius: 0.5rem; width: 780px; max-width: 92%; height: 85vh; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); overflow: hidden;'
+          style: 'background: #ffffff; border-radius: 0.5rem; width: 780px; max-width: 92%; height: 85vh; height: 85dvh; max-height: 85dvh; display: flex; flex-direction: column; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); overflow: hidden;'
         }, [
           // Header
           m('.history-modal-header', {
@@ -21237,10 +21429,14 @@ const SignedIdentity = () => {
         pgpPassword: passphrase,
       },
       async (data) => {
-        if (data.retval) await peopleUtil.refreshOwnIds(previousIds);
-        const message = data.retval
+        //  Only .catch() used to clear this, and a refused passphrase is a
+        //  perfectly valid answer: the button stayed on "Creating…" for good.
+        submitting = false;
+        if (data && data.retval) await peopleUtil.refreshOwnIds(previousIds);
+        const message = data && data.retval
           ? 'Successfully created identity.'
           : 'Could not create the identity. Check your profile password and try again.';
+        m.redraw();
         widget.popupMessage(
           m('.signed-identity-result', [m('h3', 'Create new identity'), m('p', message)]),
           'signed-identity-modal'
@@ -21384,38 +21580,54 @@ const CreateIdentity = () => {
   };
 };
 
+//  updateIdentity(id, name, avatar, pseudonimous, pgpPassword) takes the avatar
+//  as a mandatory parameter and p3IdService assigns it unconditionally
+//  (`group.mImage = avatar`). Leaving it out of the request does not mean "keep
+//  the one you have", it means "replace it with nothing": every edit used to
+//  erase the picture. So the current one is always sent back, unless the user
+//  picked another.
+function avatarPayload(details, replacement) {
+  if (replacement !== undefined) return { mData: { base64: replacement } };
+  const current = details && details.mAvatar && details.mAvatar.mData
+    ? details.mAvatar.mData.base64 || ''
+    : '';
+  return { mData: { base64: current } };
+}
+
 const SignedEditIdentity = () => {
-  let passphase = '';
+  let passphrase = '';
   return {
     view: (v) => [
       m('i.fas.fa-user-edit'),
-      m('h3', 'Enter your passpharse'),
+      m('h3', 'Enter your profile passphrase'),
       m('hr'),
 
-      m('input[type=password][placeholder=Passpharse]', {
+      m('input[type=password][placeholder=Passphrase]', {
         style: 'margin-top:50px;width:80%',
         oninput: (e) => {
-          passphase = e.target.value;
+          passphrase = e.target.value;
         },
       }),
       m(
         'button',
         {
           style: 'margin-top:160px;',
+          disabled: !passphrase,
           onclick: () =>
             rs.rsJsonApiRequest(
               '/rsIdentity/updateIdentity',
               {
                 id: v.attrs.details.mId,
                 name: v.attrs.name,
+                avatar: avatarPayload(v.attrs.details, v.attrs.avatar),
                 pseudonimous: false,
-                pgpPassword: passphase,
+                pgpPassword: passphrase,
               },
               (data) => {
-                const message = data.retval
-                  ? 'Successfully created identity.'
-                  : 'An error occured while creating identity.';
-                widget.popupMessage([m('h3', 'Create new Identity'), m('hr'), message]);
+                const message = data && data.retval
+                  ? 'Identity updated.'
+                  : 'Could not update the identity. Check your profile password and try again.';
+                widget.popupMessage([m('h3', 'Update Identity'), m('hr'), message]);
               }
             ),
         },
@@ -21426,52 +21638,99 @@ const SignedEditIdentity = () => {
 };
 
 const EditIdentity = () => {
-  let name = '';
+  //  The field used to open empty and Save sent it as it stood, so an edit
+  //  meant for the avatar alone renamed the identity to nothing.
+  let name;
+  let avatar;
+  let avatarPreview = '';
+
   return {
-    view: (v) => [
-      m('i.fas.fa-user-edit'),
-      m('h3', 'Edit Identity'),
-      m('hr'),
-      m('input[type=text][placeholder=Name]', {
-        value: name,
-        oninput: (e) => {
-          name = e.target.value;
-        },
-      }),
-      m('canvas'),
-      m(
-        'button',
-        {
-          onclick: () => {
-            !peopleUtil.checksudo(v.attrs.details.mPgpId)
-              ? widget.popupMessage([
-                m(SignedEditIdentity, {
-                  name,
-                  details: v.attrs.details,
-                }),
-              ])
-              : rs.rsJsonApiRequest(
-                '/rsIdentity/updateIdentity',
-                {
-                  id: v.attrs.details.mId,
+    view: (v) => {
+      const details = v.attrs.details || {};
+      if (name === undefined) name = details.mNickname || details.mGroupName || '';
+      const hasAvatar = Boolean(details.mAvatar && details.mAvatar.mData
+        && details.mAvatar.mData.base64);
 
-                  name,
-
-                  // avatar: v.attrs.details.mAvatar.mData.base64,
-                  pseudonimous: true,
-                },
-                (data) => {
-                  const message = data.retval
-                    ? 'Successfully Updated identity.'
-                    : 'An error occured while updating  identity.';
-                  widget.popupMessage([m('h3', 'Update Identity'), m('hr'), message]);
-                }
-              );
+      return [
+        m('i.fas.fa-user-edit'),
+        m('h3', 'Edit Identity'),
+        m('hr'),
+        m('input[type=text][placeholder=Name]', {
+          value: name,
+          oninput: (e) => {
+            name = e.target.value;
           },
-        },
-        'Save'
-      ),
-    ],
+        }),
+        m('.edit-identity-avatar', { style: 'display:flex;align-items:center;gap:0.75rem;margin:0.75rem 0;' }, [
+          m(peopleUtil.UserAvatar, {
+            avatar: avatarPreview
+              ? { mData: { base64: avatarPreview.substring(avatarPreview.indexOf(',') + 1) } }
+              : (hasAvatar ? details.mAvatar : null),
+            identityId: details.mId,
+            firstLetter: (name || '?').slice(0, 1).toUpperCase(),
+            size: 64,
+            isSquare: true,
+          }),
+          m('input[type=file][accept=image/*][id=edit-identity-avatar]', {
+            style: 'display:none;',
+            onchange: (e) => {
+              const file = e.target.files && e.target.files[0];
+              if (!file) return;
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                avatarPreview = reader.result;
+                avatar = avatarPreview.substring(avatarPreview.indexOf(',') + 1);
+                m.redraw();
+              };
+              reader.readAsDataURL(file);
+            },
+          }),
+          m('label.btn[for=edit-identity-avatar]', { style: 'cursor:pointer;' },
+            [m('i.fas.fa-upload'), ' Change avatar']),
+          avatarPreview && m('button.btn[type=button]', {
+            onclick: () => {
+              avatar = undefined;
+              avatarPreview = '';
+            },
+          }, 'Keep current'),
+        ]),
+        m(
+          'button',
+          {
+            disabled: !String(name).trim(),
+            onclick: () => {
+              const trimmed = String(name).trim();
+              if (!trimmed) return;
+
+              !peopleUtil.checksudo(details.mPgpId)
+                ? widget.popupMessage([
+                  m(SignedEditIdentity, {
+                    name: trimmed,
+                    avatar,
+                    details,
+                  }),
+                ])
+                : rs.rsJsonApiRequest(
+                  '/rsIdentity/updateIdentity',
+                  {
+                    id: details.mId,
+                    name: trimmed,
+                    avatar: avatarPayload(details, avatar),
+                    pseudonimous: true,
+                  },
+                  (data) => {
+                    const message = data && data.retval
+                      ? 'Identity updated.'
+                      : 'Could not update the identity.';
+                    widget.popupMessage([m('h3', 'Update Identity'), m('hr'), message]);
+                  }
+                );
+            },
+          },
+          'Save'
+        ),
+      ];
+    },
   };
 };
 
@@ -21491,13 +21750,25 @@ const DeleteIdentity = () => {
               {
                 id: v.attrs.id,
               },
-              () => {
+              async (data) => {
+                //  Nothing used to refresh the own identities after this, and
+                //  watchOwnIds only listens for the event refreshOwnIds emits:
+                //  the deleted identity stayed in the list. The answer was not
+                //  read either -- a refused delete still announced success.
+                const done = Boolean(data && data.retval);
+                if (done) {
+                  peopleUtil.invalidateOwnIds();
+                  await peopleUtil.refreshOwnIds();
+                }
                 widget.popupMessage([
-                  m('i.fas.fa-user-edit'),
+                  m('i.fas.fa-user-times'),
                   m('h3', 'Delete Identity: ' + v.attrs.name),
                   m('hr'),
-                  m('p', 'Identity Deleted successfuly.'),
+                  m('p', done
+                    ? 'Identity deleted.'
+                    : 'The core refused to delete this identity.'),
                 ]);
+                m.redraw();
               }
             ),
         },
@@ -21507,156 +21778,10 @@ const DeleteIdentity = () => {
   };
 };
 
-const Identity = () => {
-  let details = {};
-
-  return {
-    oninit: (v) =>
-      rs.rsJsonApiRequest(
-        '/rsIdentity/getIdDetails',
-        {
-          id: v.attrs.id,
-        },
-        (data) => {
-          details = data.details;
-        }
-      ),
-    view: (v) =>
-      m(
-        '.identity',
-        {
-          key: details.mId,
-        },
-        [
-          m('h4', details.mNickname),
-          details.mNickname &&
-          m(peopleUtil.UserAvatar, {
-            avatar: details.mAvatar,
-            firstLetter: details.mNickname.slice(0, 1).toUpperCase(),
-            identityId: details.mId,
-          }),
-          m('.details', [
-            m('p', 'ID:'),
-            m('p', details.mId),
-            m('p', 'Type:'),
-            m('p', details.mFlags === 14 ? 'Signed ID' : 'Anonymous ID'),
-            m('p', 'Owner node ID:'),
-            m('p', details.mPgpId),
-            m('p', 'Created on:'),
-            m(
-              'p',
-              typeof details.mPublishTS === 'object'
-                ? new Date(details.mPublishTS.xint64 * 1000).toLocaleString()
-                : 'undefiend'
-            ),
-            m('p', 'Last used:'),
-            m(
-              'p',
-              typeof details.mLastUsageTS === 'object'
-                ? new Date(details.mLastUsageTS.xint64 * 1000).toLocaleDateString()
-                : 'undefiend'
-            ),
-          ]),
-          m(
-            'button',
-            {
-              onclick: () =>
-                m.route.set('/chat/:userid/createdistantchat', {
-                  userid: details.mId,
-                }),
-            },
-            'Chat'
-          ),
-          m(
-            'button',
-            {
-              onclick: () =>
-                widget.popupMessage(
-                  m(EditIdentity, {
-                    details,
-                  })
-                ),
-            },
-            'Edit'
-          ),
-          m(
-            'button.red',
-            {
-              onclick: () =>
-                widget.popupMessage(
-                  m(DeleteIdentity, {
-                    id: details.mId,
-                    name: details.mNickname,
-                  })
-                ),
-            },
-            'Delete'
-          ),
-        ]
-      ),
-  };
-};
-
-const Layout = () => {
-  let ownIds = [];
-  let stopWatching;
-  return {
-    oninit: () => {
-      stopWatching = peopleUtil.watchOwnIds((data) => {
-        ownIds = data;
-        m.redraw();
-      });
-    },
-    onremove: () => stopWatching && stopWatching(),
-    view: () =>
-      m('.widget', [
-        m('.widget__heading', [
-          m('h3', 'Own Identities', m('span.counter', ownIds.length)),
-          m(
-            'button',
-            {
-              onclick: () => widget.popupMessage(m(CreateIdentity), 'create-identity-modal'),
-            },
-            'New Identity'
-          ),
-        ]),
-        m('.widget__body', [ownIds.map((id) => m(Identity, { id }))]),
-      ]),
-  };
-};
-
-Layout.CreateIdentity = CreateIdentity;
-Layout.EditIdentity = EditIdentity;
-Layout.DeleteIdentity = DeleteIdentity;
-
-module.exports = Layout;
- 
-}); 
-require.register("people/people_own_contacts", function(exports, require, module) { 
-const m = require('mithril');
-const rs = require('rswebui');
-const peopleUtil = require('people/people_util');
-
-const MyContacts = () => {
-  const list = peopleUtil.contactlist(rs.userList.users);
-  return {
-    view: () => {
-      return m('.widget', [
-        m('.widget__heading', [
-          m('h3', 'MyContacts', m('span.counter', list.length)),
-          m(peopleUtil.SearchBar),
-        ]),
-        m('.widget__body', [list.map((id) => m(peopleUtil.regularcontactInfo, { id }))]),
-      ]);
-    },
-  };
-};
-
-module.exports = {
-  view: () => {
-    return m(MyContacts);
-  },
-};
+//  Only these three are reachable: the details pane and the sidebar open them
+//  as modals. The "Own Identities" widget that used to be exported here, and
+//  the Identity card it rendered, were routed nowhere.
+module.exports = { CreateIdentity, EditIdentity, DeleteIdentity };
  
 }); 
 require.register("people/people_resolver", function(exports, require, module) { 
@@ -21691,6 +21816,8 @@ const {
   initializeDistantChat,
 } = require('people/people_state');
 
+const LIST_RENDER_CAP = 200;
+
 function formatRelativeTime(ts) {
   if (!ts) return '';
   const now = Math.floor(Date.now() / 1000);
@@ -21710,16 +21837,16 @@ const PeopleSidebar = () => {
       // 1. Determine list based on mainTab ('people' vs 'chats')
       let displayItems;
 
-      // 0. Compute active chats count (conversations with real message history)
-      const allUserGroupIds = new Set((rs.userList.users || []).map((u) => u.mGroupId));
-      Object.keys(State.chatHistoryMap || {}).forEach((id) => allUserGroupIds.add(id));
-      let activeChatsCount = 0;
-      allUserGroupIds.forEach((gxsId) => {
-        const hist = State.chatHistoryMap && State.chatHistoryMap[gxsId];
-        if (hist && hist.lastMsg && !isSystemMsg(hist.lastMsg)) {
-          activeChatsCount++;
-        }
+      //  0. The conversations we know of. Only peers with a real message ever
+      //  get an entry in chatHistoryMap, so reading it directly answers both
+      //  the badge and the list. Sweeping the whole identity list instead --
+      //  tens of thousands of them on an old node -- costs that sweep on every
+      //  redraw, and it counts nothing the map does not already hold.
+      const chatPeerIds = Object.keys(State.chatHistoryMap || {}).filter((gxsId) => {
+        const hist = State.chatHistoryMap[gxsId];
+        return Boolean(hist && hist.lastMsg && !isSystemMsg(hist.lastMsg));
       });
+      const activeChatsCount = chatPeerIds.length;
 
       if (State.mainTab === 'people') {
         let baseList;
@@ -21742,25 +21869,19 @@ const PeopleSidebar = () => {
           return nameA.localeCompare(nameB);
         });
       } else {
-        // Chats Tab: ONLY contacts and identities that have real chat history (ignoring system tunnel status logs)
-        displayItems = Array.from(allUserGroupIds)
+        // Chats Tab: ONLY identities that have real chat history (ignoring system tunnel status logs)
+        displayItems = chatPeerIds
           .map((gxsId) => {
+            //  Details are fetched for the handful of peers actually listed,
+            //  not for every identity the node has ever seen.
+            fetchIdDetails(gxsId);
             const entry = rs.userList.userMap[gxsId];
             const name = entry && entry.name ? entry.name : (rs.userList.username(gxsId) || 'Unknown');
             return { mGroupId: gxsId, mGroupName: name };
           })
-          .filter((item) => {
-            const gxsId = item.mGroupId;
-            fetchIdDetails(gxsId);
-            const hist = State.chatHistoryMap && State.chatHistoryMap[gxsId];
-
-            const hasRealHistory = Boolean(hist && hist.lastMsg && !isSystemMsg(hist.lastMsg));
-
-            if (!hasRealHistory) return false;
-
-            const name = item.mGroupName || 'Unknown';
-            return name.toLowerCase().includes(State.searchString.toLowerCase());
-          });
+          .filter((item) => (item.mGroupName || 'Unknown')
+            .toLowerCase()
+            .includes(State.searchString.toLowerCase()));
 
         // Sort by chat timestamp descending
         displayItems.sort((a, b) => {
@@ -21774,6 +21895,13 @@ const PeopleSidebar = () => {
           return timeB - timeA;
         });
       }
+
+      //  "All Users" is every identity the node has ever seen -- tens of
+      //  thousands on an old profile. Rendering them all builds that many DOM
+      //  rows and fires one getIdDetails per row from inside this view. The
+      //  list is capped instead, and the search narrows it.
+      const shownItems = displayItems.slice(0, LIST_RENDER_CAP);
+      const hiddenCount = displayItems.length - shownItems.length;
 
       return m('.people-left-pane', [
         // Sidebar Header Container
@@ -21860,7 +21988,7 @@ const PeopleSidebar = () => {
           m('.friends-scroll', [
             displayItems.length === 0
               ? m('.network-pane-placeholder', { style: 'padding: 2rem 0;' }, State.mainTab === 'chats' ? 'No active chats' : 'No identities found')
-              : displayItems.map((item) => {
+              : shownItems.map((item) => {
                   let gxsId;
                   if (State.mainTab === 'people' && State.activeFilter === 'own') {
                     gxsId = item;
@@ -21961,9 +22089,14 @@ const PeopleSidebar = () => {
                           State.chatPid = null;
                           State.chatMessages = [];
                           stopStatusPolling();
-                          if (State.activeTab === 'chat') {
-                            initializeDistantChat();
-                          }
+                          //  Selecting somebody is not asking to talk to them.
+                          //  The chat tab is sticky, so inheriting it here meant
+                          //  that once a conversation had been opened, every
+                          //  later click in the list silently requested a GXS
+                          //  tunnel toward the contact -- an action the peer
+                          //  sees. Show the profile; the tunnel waits for the
+                          //  Chat Conversation tab.
+                          State.activeTab = 'details';
                         }
                         m.redraw();
                       },
@@ -22002,6 +22135,9 @@ const PeopleSidebar = () => {
                     ]
                   );
                 }),
+            hiddenCount > 0 && m('.friends-list-more', {
+              style: 'padding: 0.75rem 1rem; color: #64748b; font-size: 0.85rem; font-style: italic;',
+            }, `${hiddenCount} more identities — search to narrow the list`),
           ]),
 
           // Context Menu
@@ -22074,6 +22210,10 @@ const PeopleSidebar = () => {
                       { id: menu.gxsId, isContact: !menu.isContact },
                       (data, success) => {
                         if (success) {
+                          //  isContact is read from rs.userList.userMap, which
+                          //  only loadUsers() refreshes: reloading the identity
+                          //  summaries alone left the list showing the old state.
+                          rs.userList.loadUsers();
                           loadGxsIdentities();
                         }
                       }
@@ -22131,6 +22271,13 @@ const State = {
   historySearchQuery: '',
   fullHistoryMessages: [],
   isHistoryLoading: false,
+  pendingChatOpen: null, // gxsId a chat was explicitly asked for from another page
+  chatCloseFoundNothing: false, // the core had no connection left to close
+  statusPollFailures: 0, // consecutive getDistantChatStatus answers of false
+  showEmojiPicker: false,
+  attachPath: '', // file being hashed for a retroshare:// link
+  isHashing: false,
+  attachError: '',
 };
 
 function getDistantChatSession(gxsId) {
@@ -22140,17 +22287,131 @@ function getDistantChatSession(gxsId) {
       pid: null,
       status: null,
       messages: [],
+      msgKeys: new Set(),
       inputMsg: '',
       disconnected: false,
     };
   }
-  return State.activeDistantChats[gxsId];
+  const session = State.activeDistantChats[gxsId];
+  //  Sessions created by an older build of this file have no key set.
+  if (!session.msgKeys) session.msgKeys = new Set();
+  return session;
 }
 
+//  The chat view renders `State.chatMessages`, while the live event handler and
+//  the history loader work on the per peer `session.messages`. Those two MUST
+//  remain the very same array: the moment one side is *reassigned* instead of
+//  mutated, the other one becomes an orphan and the messages written into it
+//  are never displayed. That is exactly what used to happen -- the history
+//  answer rebound `State.chatMessages` to a fresh array, so every incoming
+//  message landed in the now invisible `session.messages` and the conversation
+//  looked one-way. Everything below therefore mutates the session array in
+//  place, and `State.chatMessages` is only ever re-pointed *at* it.
+function chatMessageKey(msg) {
+  const text = msg.msg || msg.message || '';
+  //  System notices are identified by their text alone: they are re-emitted on
+  //  every status poll and must not pile up.
+  if (msg.isSystem) return 'sys_' + text;
+  const time = msg.sendTime || msg.recvTime || 0;
+  return (msg.incoming ? 'in_' : 'out_') + time + '_' + text;
+}
+
+//  The text being typed belongs to the conversation it is being typed in. It
+//  used to live in State.chatInputMsg alone, which nothing cleared when the
+//  selected peer changed: a message written to one contact stayed in the box
+//  when the next conversation opened, one Enter away from the wrong recipient.
+function setChatDraft(text) {
+  State.chatInputMsg = text;
+  const session = State.selectedId ? getDistantChatSession(State.selectedId) : null;
+  if (session) session.inputMsg = text;
+}
+
+function scrollChatToBottom() {
+  setTimeout(() => {
+    const element = document.querySelector('.chat-messages');
+    if (element) element.scrollTop = element.scrollHeight;
+  }, 100);
+}
+
+//  Returns true when at least one message was really new, so callers can skip
+//  the redraw/scroll when the core just replayed something already displayed.
+function addSessionMessages(session, msgs) {
+  if (!session || !msgs || msgs.length === 0) return false;
+  let added = false;
+  msgs.forEach((msg) => {
+    if (!msg) return;
+    const key = chatMessageKey(msg);
+    if (session.msgKeys.has(key)) return;
+    session.msgKeys.add(key);
+    session.messages.push(msg);
+    added = true;
+  });
+  if (!added) return false;
+  session.messages.sort(
+    (a, b) => (a.sendTime || a.recvTime || 0) - (b.sendTime || b.recvTime || 0)
+  );
+  return true;
+}
+
+function resetSessionMessages(session, msgs) {
+  if (!session) return;
+  session.messages.length = 0;
+  session.msgKeys.clear();
+  addSessionMessages(session, msgs);
+}
+
+function addSessionSystemMessage(session, text) {
+  return addSessionMessages(session, [{
+    incoming: true,
+    isSystem: true,
+    msg: text,
+    sendTime: Math.floor(Date.now() / 1000),
+  }]);
+}
+
+//  Messages received while the People tab was not mounted -- or before its
+//  event handler was installed -- are still sitting in the rswebui event queue
+//  buffer, keyed by chat type and distant chat id.
+function drainBufferedChatMessages(session) {
+  if (!session || !session.pid) return false;
+  const owner = rs.events && rs.events[15];
+  const buckets = owner && owner.messages ? owner.messages[2] : null;
+  const buffered = buckets ? buckets[session.pid] : null;
+  if (!buffered || buffered.length === 0) return false;
+  return addSessionMessages(session, buffered);
+}
+
+
+//  Details are fetched once and kept for good, which is what makes the lists
+//  cheap. The identity being *looked at* is another matter: its reputation,
+//  its usage record and its avatar move while the pane is open, so that one is
+//  allowed to go stale and be asked again.
+const SELECTED_DETAILS_TTL_MS = 60 * 1000;
+const detailsFetchedAt = {};
+
+function refreshSelectedIdDetails() {
+  const gxsId = State.selectedId;
+  if (!peopleUtil.isUsableIdentityId(gxsId)) return;
+  const at = detailsFetchedAt[gxsId] || 0;
+  if (Date.now() - at < SELECTED_DETAILS_TTL_MS) return;
+
+  //  Asked again over what is already displayed, never by clearing it first:
+  //  the entry is what the pane renders, and emptying it would blank the whole
+  //  profile for the length of a round trip.
+  detailsFetchedAt[gxsId] = Date.now();
+  rs.rsJsonApiRequest('/rsIdentity/getIdDetails', { id: gxsId }, (detData) => {
+    const details = detData && detData.details;
+    if (details && peopleUtil.isUsableIdentityId(String(details.mId || ''))) {
+      State.gxsIdToDetailsMap[gxsId] = details;
+      m.redraw();
+    }
+  });
+}
 
 function fetchIdDetails(gxsId, attempt = 0) {
   if (!peopleUtil.isUsableIdentityId(gxsId)) return;
   if (State.gxsIdToDetailsMap[gxsId] === undefined) {
+    detailsFetchedAt[gxsId] = Date.now();
     State.gxsIdToDetailsMap[gxsId] = null; // Mark as loading
     rs.rsJsonApiRequest('/rsIdentity/getIdDetails', { id: gxsId }, (detData) => {
       const details = detData && detData.details;
@@ -22208,18 +22469,32 @@ function get64Num(val) {
   return Number(val) || 0;
 }
 
+//  RsIdentityUsage::mServiceId is an RsServiceType (rsserviceids.h), a 16 bit
+//  service number -- 0x0215 for the forums, 0x0217 for the channels. Matching it
+//  against 1..8 could never succeed, so every line of the usage panel used to
+//  read "Unknown (533)".
+const SERVICE_NAMES = {
+  0x0012: 'Chat',
+  0x0022: 'Mail',
+  0x0023: 'Direct mail',
+  0x0024: 'Distant mail',
+  0x0027: 'Distant chat',
+  0x0028: 'GXS tunnels',
+  0x0211: 'Identities',
+  0x0213: 'Wiki',
+  0x0214: 'Wire',
+  0x0215: 'Forums',
+  0x0216: 'Boards',
+  0x0217: 'Channels',
+  0x0218: 'Circles',
+  0x0219: 'Reputation',
+  0x0221: 'Calendar',
+  0x0230: 'Distant messages',
+};
+
 function getServiceName(serviceId) {
-  switch (serviceId) {
-    case 1: return 'Channels';
-    case 2: return 'Forums';
-    case 3: return 'Boards';
-    case 4: return 'Chat';
-    case 5: return 'GxsCircles';
-    case 6: return 'GxsMail';
-    case 7: return 'GxsCircles';
-    case 8: return 'Wire';
-    default: return 'Unknown (' + serviceId + ')';
-  }
+  const id = Number(serviceId);
+  return SERVICE_NAMES[id] || ('Unknown (0x' + id.toString(16) + ')');
 }
 
 function createUsageString(u) {
@@ -22340,41 +22615,42 @@ function pollDistantChatStatus() {
       pid: State.chatPid,
     },
     (detail, success) => {
-      if (success && detail.retval) {
-        State.distantChatStatus = detail.info;
-        if (session) session.status = detail.info;
+      //  getDistantChatStatus answers false once the tunnel is gone from the
+      //  core -- died of inaction, closed by the peer, closed by us. Ignoring
+      //  that answer left the last known status on screen for good: a dead
+      //  conversation kept its green dot and its "You can talk", and the Leave
+      //  button then had nothing left to close.
+      if (!success || !detail || !detail.retval) {
+        State.statusPollFailures += 1;
+        if (State.statusPollFailures >= 2) {
+          if (session) {
+            addSessionSystemMessage(session, 'The distant chat tunnel is gone.');
+            session.disconnected = true;
+          }
+          State.distantChatStatus = null;
+          State.chatDisconnected = true;
+          State.chatCloseFoundNothing = false;
+          stopStatusPolling();
+          m.redraw();
+        }
+        return;
+      }
+
+      State.statusPollFailures = 0;
+      State.distantChatStatus = detail.info;
+      if (session) {
+        session.status = detail.info;
 
         if (detail.info.status === 2) {
-          const text = 'Tunnel is secured. You can talk!';
-          const exists = State.chatMessages.some(
-            (m) => m.isSystem && (m.msg === text || m.message === text)
-          );
-          if (!exists) {
-            State.chatMessages.push({
-              incoming: true,
-              isSystem: true,
-              msg: text,
-              sendTime: Math.floor(Date.now() / 1000),
-            });
-            State.chatMessages.sort((a, b) => a.sendTime - b.sendTime);
-          }
+          addSessionSystemMessage(session, 'Tunnel is secured. You can talk!');
+          //  The tunnel just went up: anything the peer sent while it was still
+          //  pending is waiting in the event buffer.
+          drainBufferedChatMessages(session);
         } else if (detail.info.status === 3) {
-          const text = 'Your partner closed the conversation.';
-          const exists = State.chatMessages.some(
-            (m) => m.isSystem && (m.msg === text || m.message === text)
-          );
-          if (!exists) {
-            State.chatMessages.push({
-              incoming: true,
-              isSystem: true,
-              msg: text,
-              sendTime: Math.floor(Date.now() / 1000),
-            });
-            State.chatMessages.sort((a, b) => a.sendTime - b.sendTime);
-          }
+          addSessionSystemMessage(session, 'Your partner closed the conversation.');
         }
-        m.redraw();
       }
+      m.redraw();
     }
   );
 }
@@ -22415,7 +22691,9 @@ function initializeDistantChat(force = false) {
     State.chatMessages = session.messages;
     State.distantChatStatus = session.status;
     State.chatDisconnected = session.disconnected;
+    State.chatInputMsg = session.inputMsg || '';
 
+    drainBufferedChatMessages(session);
     loadChatMessages();
     pollDistantChatStatus();
     startStatusPolling();
@@ -22425,20 +22703,23 @@ function initializeDistantChat(force = false) {
   // Otherwise, start a new tunnel for this peer
   session.pid = null;
   session.status = null;
-  session.messages = [
+  resetSessionMessages(session, [
     {
       incoming: true,
       isSystem: true,
       msg: 'Starting distant chat... Please wait for secure tunnel.',
       sendTime: Math.floor(Date.now() / 1000),
     }
-  ];
+  ]);
   session.disconnected = false;
 
   State.chatPid = null;
   State.chatMessages = session.messages;
   State.distantChatStatus = null;
   State.chatDisconnected = false;
+  State.chatCloseFoundNothing = false;
+  State.statusPollFailures = 0;
+  State.chatInputMsg = session.inputMsg || '';
   m.redraw();
 
   rs.rsJsonApiRequest(
@@ -22454,6 +22735,7 @@ function initializeDistantChat(force = false) {
         session.pid = hexPid;
         State.chatPid = hexPid;
         State.distantChatStatus = null;
+        drainBufferedChatMessages(session);
         loadChatMessages();
         pollDistantChatStatus();
         startStatusPolling();
@@ -22466,6 +22748,9 @@ function initializeDistantChat(force = false) {
 function loadChatMessages() {
   if (!State.chatPid) return;
 
+  //  Captured now: the answer may come back after the user selected another
+  //  peer, and it must then land in the session it was asked for.
+  const session = State.selectedId ? getDistantChatSession(State.selectedId) : null;
   const chatPeerId = {
     broadcast_status_peer_id: '00000000000000000000000000000000',
     type: 2, // TYPE_PRIVATE_DISTANT
@@ -22482,7 +22767,14 @@ function loadChatMessages() {
     },
     (data, success) => {
       if (success && data.msgs) {
-        State.chatMessages = data.msgs;
+        if (session) {
+          //  Merge, never replace: the session array is the one the view and
+          //  the live event handler share.
+          addSessionMessages(session, data.msgs);
+          if (session.pid === State.chatPid) State.chatMessages = session.messages;
+        } else {
+          State.chatMessages = data.msgs;
+        }
         const realUserMsgs = data.msgs.filter(
           (m) => !m.isSystem && !isSystemMsg(m.message || m.msg)
         );
@@ -22496,10 +22788,7 @@ function loadChatMessages() {
           delete State.chatHistoryMap[State.selectedId];
         }
         m.redraw();
-        setTimeout(() => {
-          const element = document.querySelector('.chat-messages');
-          if (element) element.scrollTop = element.scrollHeight;
-        }, 100);
+        scrollChatToBottom();
       }
     }
   );
@@ -22508,6 +22797,7 @@ function loadChatMessages() {
 function sendDistantChatMessage() {
   if (!State.chatInputMsg.trim() || !State.chatPid) return;
 
+  const session = State.selectedId ? getDistantChatSession(State.selectedId) : null;
   const cid = {
     broadcast_status_peer_id: '00000000000000000000000000000000',
     type: 2, // TYPE_PRIVATE_DISTANT
@@ -22517,7 +22807,7 @@ function sendDistantChatMessage() {
   };
 
   const text = State.chatInputMsg;
-  State.chatInputMsg = '';
+  setChatDraft('');
 
   rs.rsJsonApiRequest(
     '/rsChats/sendChat',
@@ -22534,7 +22824,12 @@ function sendDistantChatMessage() {
           incoming: false,
           lobby_peer_gxs_id: State.selectedOwnGxsIdForChat,
         };
-        State.chatMessages.push(echoMsg);
+        if (session) {
+          addSessionMessages(session, [echoMsg]);
+          if (session.pid === State.chatPid) State.chatMessages = session.messages;
+        } else {
+          State.chatMessages.push(echoMsg);
+        }
         if (State.selectedId) {
           State.chatHistoryMap[State.selectedId] = {
             lastMsg: text,
@@ -22542,18 +22837,99 @@ function sendDistantChatMessage() {
           };
         }
         m.redraw();
-        setTimeout(() => {
-          const element = document.querySelector('.chat-messages');
-          if (element) element.scrollTop = element.scrollHeight;
-        }, 100);
+        scrollChatToBottom();
       } else {
         console.error('[RS] Failed to send distant chat message:', data);
-        alert('Failed to send distant chat message. The image/payload exceeds RetroShare max chat packet size.');
-        State.chatInputMsg = text;
+        //  No size limit is involved: getMaxMessageSecuritySize() answers 0,
+        //  unlimited, for distant chat, and the core slices anything longer
+        //  than 15000 characters and reassembles it on the other side. Blaming
+        //  the payload was a guess, and a wrong one.
+        alert('Failed to send the message. The tunnel may have closed -- check the connection state above.');
+        setChatDraft(text);
         m.redraw();
       }
     }
   );
+}
+
+//  Changing the identity we talk as means another tunnel: its id is
+//  sha1(sorted(own || peer)), so the one built for the previous identity is a
+//  different tunnel, and nothing but this closes it -- it used to be left open
+//  and digging.
+function switchChatIdentity(ownGxsId) {
+  const previousPid = State.chatPid;
+  State.selectedOwnGxsIdForChat = ownGxsId;
+
+  if (!previousPid) {
+    initializeDistantChat(true);
+    return;
+  }
+  rs.rsJsonApiRequest(
+    '/rsChats/closeDistantChatConnexion',
+    { pid: previousPid },
+    () => initializeDistantChat(true)
+  );
+}
+
+//  Ending the conversation on our side. `closed` is what the core answered:
+//  false means it had no connection left for that tunnel id, which the card
+//  then says rather than claiming the user just closed something.
+function leaveDistantChat(closed) {
+  if (State.selectedId && State.activeDistantChats[State.selectedId]) {
+    delete State.activeDistantChats[State.selectedId];
+  }
+  State.chatPid = null;
+  State.chatMessages = [];
+  State.distantChatStatus = null;
+  State.chatDisconnected = true;
+  State.chatCloseFoundNothing = !closed;
+  State.statusPollFailures = 0;
+  stopStatusPolling();
+  m.redraw();
+}
+
+//  Live incoming distant chat message, coming from the rsEvents stream.
+function receiveDistantChatMessage(chatMessage) {
+  const msgCid = chatMessage && chatMessage.chat_id;
+  if (!msgCid || msgCid.type !== 2) return;
+
+  const msgPid = rs.idToHex(msgCid.distant_chat_id);
+  if (!msgPid) return;
+
+  let session = null;
+  let targetGxsId = null;
+  Object.keys(State.activeDistantChats || {}).forEach((id) => {
+    const candidate = State.activeDistantChats[id];
+    if (candidate && candidate.pid === msgPid) {
+      session = candidate;
+      targetGxsId = id;
+    }
+  });
+
+  //  The tunnel can be answered before `initiateDistantChatConnexion` has
+  //  registered its pid on the session: adopt the visible conversation.
+  if (!session && State.chatPid === msgPid && State.selectedId) {
+    targetGxsId = State.selectedId;
+    session = getDistantChatSession(targetGxsId);
+    session.pid = msgPid;
+  }
+  if (!session) return;
+
+  if (!addSessionMessages(session, [chatMessage])) return;
+
+  if (targetGxsId) {
+    State.chatHistoryMap[targetGxsId] = {
+      lastMsg: chatMessage.msg || chatMessage.message || '',
+      lastTime: chatMessage.sendTime || chatMessage.recvTime || Math.floor(Date.now() / 1000),
+    };
+  }
+
+  //  The view renders State.chatMessages, so it has to point at the session
+  //  that just received the message when that session is the visible one.
+  if (session.pid === State.chatPid) State.chatMessages = session.messages;
+
+  m.redraw();
+  if (State.selectedId === targetGxsId) scrollChatToBottom();
 }
 
 //  Two /rsHistory/getMessages per known identity, and a node knows hundreds of
@@ -22564,11 +22940,20 @@ function sendDistantChatMessage() {
 //  getting a slot.
 const HISTORY_PRELOAD_CONCURRENCY = 4;
 
-function runQueued(tasks, concurrency) {
+function runQueued(tasks, concurrency, onDone) {
   let next = 0;
+  let finished = 0;
   const startNext = () => {
+    if (finished >= tasks.length) return;
     if (next >= tasks.length) return;
-    tasks[next++](startNext);
+    tasks[next++](() => {
+      finished++;
+      if (finished >= tasks.length) {
+        if (onDone) onDone();
+        return;
+      }
+      startNext();
+    });
   };
   for (let i = 0; i < concurrency && i < tasks.length; i++) startNext();
 }
@@ -22614,41 +22999,102 @@ function historyPreloadTask(gxsId, chatPeerId, newerOnly) {
   );
 }
 
-function preloadAllChatHistory() {
-  rs.rsJsonApiRequest('/rsIdentity/getIdentitiesSummaries', {}, (data) => {
-    const ids = (data && data.ids) ? data.ids : (rs.userList.users || []);
-    if (!ids || ids.length === 0) return;
+function distantChatIdFor(pid) {
+  return {
+    broadcast_status_peer_id: '00000000000000000000000000000000',
+    type: 2, // TYPE_PRIVATE_DISTANT
+    peer_id: '00000000000000000000000000000000',
+    distant_chat_id: pid,
+    lobby_id: { xstr64: '0' },
+  };
+}
 
+function privateChatIdFor(sslId) {
+  return {
+    broadcast_status_peer_id: '00000000000000000000000000000000',
+    type: 1, // TYPE_PRIVATE
+    peer_id: sslId,
+    distant_chat_id: '00000000000000000000000000000000',
+    lobby_id: { xstr64: '0' },
+  };
+}
+
+//  Private chat history is keyed by the *location* (SSL) id of the friend, not
+//  by their PGP id. A PGP id is half the length of an RsPeerId, so the core
+//  cannot parse it: it builds a null id -- which happens to be the key of the
+//  public/broadcast history -- and prints a stack trace for every single
+//  request. One identity per known PGP key means hundreds of those per visit.
+function locationIdsOf(gxsId) {
+  const details = State.gxsIdToDetailsMap[gxsId];
+  const pgpId = details ? details.mPgpId : null;
+  if (!pgpId || pgpId === '0000000000000000') return [];
+  const friend = Data.gpgDetails[pgpId.toLowerCase()];
+  if (!friend || !friend.locations) return [];
+  return friend.locations.map((loc) => loc && loc.id).filter(Boolean);
+}
+
+//  Only peers we can actually have a conversation with are probed. Sweeping
+//  every identity the node ever saw -- tens of thousands on an old profile --
+//  is what made the Chats badge climb for minutes at every visit, one tick per
+//  answer, and start over at every click on the tab.
+function chatPeerCandidates() {
+  const ids = new Set();
+
+  peopleUtil.contactlist(rs.userList.users || []).forEach((u) => {
+    if (u && u.mGroupId) ids.add(u.mGroupId);
+  });
+  Object.keys(State.chatHistoryMap || {}).forEach((id) => ids.add(id));
+  Object.keys(State.activeDistantChats || {}).forEach((id) => ids.add(id));
+
+  //  Identities that belong to one of our own friends: their direct chat
+  //  history is part of the same conversation as far as the user is concerned.
+  (rs.userList.users || []).forEach((u) => {
+    const gxsId = u && u.mGroupId;
+    if (gxsId && !ids.has(gxsId) && locationIdsOf(gxsId).length > 0) ids.add(gxsId);
+  });
+
+  return Array.from(ids).filter(peopleUtil.isUsableIdentityId);
+}
+
+//  Repeated calls are the norm here: the layout, the sidebar and the Chats tab
+//  all ask for a preload, and the tab asks again at every click.
+const HISTORY_PRELOAD_MIN_INTERVAL_MS = 30 * 1000;
+let historyPreloadRunning = false;
+let historyPreloadedAt = 0;
+
+function preloadAllChatHistory() {
+  if (historyPreloadRunning) return;
+  const now = Date.now();
+  if (historyPreloadedAt && now - historyPreloadedAt < HISTORY_PRELOAD_MIN_INTERVAL_MS) return;
+
+  historyPreloadRunning = true;
+  historyPreloadedAt = now;
+
+  peopleUtil.ownIds((ownIds) => {
+    //  The candidates come from the friend list and the contact flags, which
+    //  are loaded in parallel with this: nothing to probe yet only means the
+    //  answers have not landed, so the interval must not lock the next try out.
     const tasks = [];
 
-    ids.forEach((u) => {
-      const gxsId = typeof u === 'object' ? u.mGroupId : u;
-      if (!gxsId) return;
+    chatPeerCandidates().forEach((gxsId) => {
+      (ownIds || []).forEach((ownId) => {
+        const pid = peopleUtil.distantChatPid(ownId, gxsId);
+        if (pid) tasks.push(historyPreloadTask(gxsId, distantChatIdFor(pid), false));
+      });
 
-      // Check Distant Chat History (type: 2 - TYPE_PRIVATE_DISTANT)
-      tasks.push(historyPreloadTask(gxsId, {
-        broadcast_status_peer_id: '00000000000000000000000000000000',
-        type: 2, // TYPE_PRIVATE_DISTANT
-        peer_id: '00000000000000000000000000000000',
-        distant_chat_id: gxsId,
-        lobby_id: { xstr64: '0' },
-      }, false));
-
-      // Also check Private Chat History (type: 1) if PGP ID is known
-      const details = State.gxsIdToDetailsMap[gxsId];
-      const pgpId = details ? details.mPgpId : (typeof u === 'object' ? u.mPgpId : null);
-      if (pgpId && pgpId !== '0000000000000000') {
-        tasks.push(historyPreloadTask(gxsId, {
-          broadcast_status_peer_id: '00000000000000000000000000000000',
-          type: 1, // PRIVATE
-          peer_id: pgpId,
-          distant_chat_id: '00000000000000000000000000000000',
-          lobby_id: { xstr64: '0' },
-        }, true));
-      }
+      locationIdsOf(gxsId).forEach((sslId) => {
+        tasks.push(historyPreloadTask(gxsId, privateChatIdFor(sslId), true));
+      });
     });
 
-    runQueued(tasks, HISTORY_PRELOAD_CONCURRENCY);
+    if (tasks.length === 0) {
+      historyPreloadRunning = false;
+      historyPreloadedAt = 0;
+      return;
+    }
+    runQueued(tasks, HISTORY_PRELOAD_CONCURRENCY, () => {
+      historyPreloadRunning = false;
+    });
   });
 }
 
@@ -22659,41 +23105,31 @@ function loadAllHistoryForSelectedPeer(callback) {
   State.fullHistoryMessages = [];
   m.redraw();
 
-  const queries = [];
+  const pids = new Set();
 
-  // Query 1: Distant Chat History by active chatPid (type: 2 - TYPE_PRIVATE_DISTANT)
-  if (State.chatPid) {
-    queries.push({
-      broadcast_status_peer_id: '00000000000000000000000000000000',
-      type: 2, // TYPE_PRIVATE_DISTANT
-      peer_id: '00000000000000000000000000000000',
-      distant_chat_id: State.chatPid,
-      lobby_id: { xstr64: '0' },
-    });
-  }
+  // Distant chat history of the conversation currently open
+  if (State.chatPid) pids.add(State.chatPid);
 
-  // Query 2: Distant Chat History by selectedId if different (type: 2 - TYPE_PRIVATE_DISTANT)
-  if (State.selectedId && State.selectedId !== State.chatPid) {
-    queries.push({
-      broadcast_status_peer_id: '00000000000000000000000000000000',
-      type: 2, // TYPE_PRIVATE_DISTANT
-      peer_id: '00000000000000000000000000000000',
-      distant_chat_id: State.selectedId,
-      lobby_id: { xstr64: '0' },
-    });
-  }
+  //  Distant chat history of the earlier conversations with this peer: one
+  //  tunnel per own identity, and the tunnel id is the key -- the peer's GXS id
+  //  never is, so asking for it could only ever answer an empty list.
+  (State.ownGxsIds || []).forEach((ownId) => {
+    const pid = peopleUtil.distantChatPid(ownId, State.selectedId);
+    if (pid) pids.add(pid);
+  });
 
-  // Query 3: Private Chat History by PGP ID if available (type: 1 - TYPE_PRIVATE)
-  const details = State.gxsIdToDetailsMap[State.selectedId];
-  const pgpId = details ? details.mPgpId : null;
-  if (pgpId && pgpId !== '0000000000000000') {
-    queries.push({
-      broadcast_status_peer_id: '00000000000000000000000000000000',
-      type: 1, // TYPE_PRIVATE
-      peer_id: pgpId,
-      distant_chat_id: '00000000000000000000000000000000',
-      lobby_id: { xstr64: '0' },
-    });
+  const queries = Array.from(pids).map(distantChatIdFor);
+
+  // Direct chat history, one query per location of the friend behind this identity
+  locationIdsOf(State.selectedId).forEach((sslId) => {
+    queries.push(privateChatIdFor(sslId));
+  });
+
+  if (queries.length === 0) {
+    State.isHistoryLoading = false;
+    m.redraw();
+    if (callback) callback();
+    return;
   }
 
   let accumulatedMsgs = [];
@@ -22733,6 +23169,10 @@ function loadAllHistoryForSelectedPeer(callback) {
 module.exports = {
   State,
   getDistantChatSession,
+  addSessionMessages,
+  drainBufferedChatMessages,
+  receiveDistantChatMessage,
+  scrollChatToBottom,
   isSystemMsg,
   preloadAllChatHistory,
   loadAllHistoryForSelectedPeer,
@@ -22754,6 +23194,10 @@ module.exports = {
   initializeDistantChat,
   loadChatMessages,
   sendDistantChatMessage,
+  leaveDistantChat,
+  setChatDraft,
+  switchChatIdentity,
+  refreshSelectedIdDetails,
 };
 
  
@@ -22767,6 +23211,68 @@ function checksudo(id) {
   return id === '0000000000000000';
 }
 
+//  Distant chat history is not stored under the peer's GXS id but under the
+//  *tunnel* id, and the core builds that one as
+//  RsGxsTunnelId(sha1(sorted(own_id || peer_id))) truncated to 16 bytes
+//  (p3GxsTunnelService::makeGxsTunnelId). Asking `/rsHistory/getMessages` for a
+//  GXS id therefore always answers an empty list. There is no API to derive it
+//  remotely and no crypto.subtle outside a secure context -- the web UI is
+//  served over plain HTTP on the LAN -- so the digest is computed here.
+function sha1Hex(bytes) {
+  const ml = bytes.length;
+  const withPad = bytes.slice();
+  withPad.push(0x80);
+  while (withPad.length % 64 !== 56) withPad.push(0);
+  const bits = ml * 8;
+  //  Ids are 32 bytes at most, so the high word of the length is always zero.
+  withPad.push(0, 0, 0, 0);
+  withPad.push((bits >>> 24) & 0xff, (bits >>> 16) & 0xff, (bits >>> 8) & 0xff, bits & 0xff);
+
+  let h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFE, h3 = 0x10325476, h4 = 0xC3D2E1F0;
+  const w = new Array(80);
+  const rotl = (v, n) => ((v << n) | (v >>> (32 - n))) >>> 0;
+
+  for (let i = 0; i < withPad.length; i += 64) {
+    for (let j = 0; j < 16; j++) {
+      w[j] = ((withPad[i + 4 * j] << 24) | (withPad[i + 4 * j + 1] << 16)
+        | (withPad[i + 4 * j + 2] << 8) | withPad[i + 4 * j + 3]) >>> 0;
+    }
+    for (let j = 16; j < 80; j++) w[j] = rotl(w[j - 3] ^ w[j - 8] ^ w[j - 14] ^ w[j - 16], 1);
+
+    let a = h0, b = h1, c = h2, d = h3, e = h4;
+    for (let j = 0; j < 80; j++) {
+      let f, k;
+      if (j < 20) { f = (b & c) | (~b & d); k = 0x5A827999; }
+      else if (j < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1; }
+      else if (j < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
+      else { f = b ^ c ^ d; k = 0xCA62C1D6; }
+      const t = (rotl(a, 5) + f + e + k + w[j]) >>> 0;
+      e = d; d = c; c = rotl(b, 30); b = a; a = t;
+    }
+    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0;
+    h3 = (h3 + d) >>> 0; h4 = (h4 + e) >>> 0;
+  }
+
+  return [h0, h1, h2, h3, h4].map((v) => ('0000000' + v.toString(16)).slice(-8)).join('');
+}
+
+function hexToBytes(hex) {
+  const out = [];
+  for (let i = 0; i + 1 < hex.length; i += 2) out.push(parseInt(hex.substr(i, 2), 16));
+  return out;
+}
+
+//  Both ids are sorted first, so the two ends of a conversation compute the
+//  same tunnel. The core sorts the raw bytes; on equal length lowercase hex,
+//  a plain string comparison gives the same order.
+function distantChatPid(ownGxsId, peerGxsId) {
+  const own = String(ownGxsId || '').toLowerCase();
+  const peer = String(peerGxsId || '').toLowerCase();
+  if (own.length !== 32 || peer.length !== 32) return null;
+  const joined = own < peer ? own + peer : peer + own;
+  return sha1Hex(hexToBytes(joined)).slice(0, 32);
+}
+
 function getAvatarColor(seed) {
   let hash = 0;
   if (seed) {
@@ -22776,6 +23282,25 @@ function getAvatarColor(seed) {
   }
   const hue = Math.abs(hash) % 360;
   return `hsl(${hue}, 60%, 60%)`;
+}
+
+//  jdenticon draws a fresh SVG on every call, and this runs in the view of every
+//  avatar on screen -- so once per avatar per redraw, and a redraw happens on
+//  every answer of every polling request. The drawing depends on nothing but the
+//  id and the size.
+const jdenticonCache = new Map();
+
+function jdenticonSvg(identityId, pxSize) {
+  const key = identityId + '|' + pxSize;
+  let svg = jdenticonCache.get(key);
+  if (svg === undefined) {
+    svg = jdenticon.toSvg(identityId, pxSize);
+    //  A node knows tens of thousands of identities: keep this to what a few
+    //  lists can show rather than growing it for ever.
+    if (jdenticonCache.size > 512) jdenticonCache.clear();
+    jdenticonCache.set(key, svg);
+  }
+  return svg;
 }
 
 const UserAvatar = () => ({
@@ -22804,7 +23329,7 @@ const UserAvatar = () => ({
     }
 
     if (identityId && identityId !== '0000000000000000') {
-      const svgString = jdenticon.toSvg(identityId, pxSize);
+      const svgString = jdenticonSvg(identityId, pxSize);
       return m('div.jdenticon-avatar', {
         style: {
           display: 'inline-flex',
@@ -22916,24 +23441,17 @@ const IdentityAvatar = () => ({
 function contactlist(list) {
   if (list === undefined) return [];
   return list.filter((id) => {
-    id.isSearched = true;
     const entry = rs.userList.userMap[id.mGroupId];
     return entry && entry.isContact;
   });
 }
 
 function sortUsers(list) {
-  if (list !== undefined) {
-    const result = [];
-    list.map((id) => {
-      id.isSearched = true;
-      result.push(id);
-    });
-
-    result.sort((a, b) => a.mGroupName.localeCompare(b.mGroupName));
-    return result;
-  }
-  return list;
+  if (list === undefined) return list;
+  //  Copied, not sorted in place: this is rs.userList.users, shared with every
+  //  other page. The isSearched marking that used to happen here belonged to a
+  //  search box that no longer exists.
+  return [...list].sort((a, b) => a.mGroupName.localeCompare(b.mGroupName));
 }
 
 function sortIds(list) {
@@ -23050,97 +23568,6 @@ async function ownIds(consumer = () => { }, onlySigned = false) {
     return [];
   }
 }
-const SearchBar = () => {
-  let searchString = '';
-
-  return {
-    view: () =>
-      m('input.searchbar', {
-        type: 'text',
-        placeholder: 'search',
-        value: searchString,
-        oninput: (e) => {
-          searchString = e.target.value.toLowerCase();
-
-          rs.userList.users.map((id) => {
-            if (id.mGroupName.toLowerCase().indexOf(searchString) > -1) {
-              id.isSearched = true;
-            } else {
-              id.isSearched = false;
-            }
-          });
-        },
-      }),
-  };
-};
-
-const regularcontactInfo = () => {
-  let details = {};
-
-  return {
-    oninit: (v) =>
-      rs.rsJsonApiRequest(
-        '/rsIdentity/getIdDetails',
-        {
-          id: v.attrs.id.mGroupId,
-        },
-        (data) => {
-          details = data.details;
-        }
-      ),
-    view: (v) =>
-      m(
-        '.identity',
-        {
-          key: details.mId,
-          style: 'display:' + (v.attrs.id.isSearched ? 'block' : 'none'),
-        },
-        [
-          m('h4', details.mNickname),
-          details.mNickname &&
-          m(UserAvatar, {
-            avatar: details.mAvatar,
-            firstLetter: details.mNickname.slice(0, 1).toUpperCase(),
-            identityId: details.mId || v.attrs.id.mGroupId,
-          }),
-          m('.details', [
-            m('p', 'ID:'),
-            m('p', details.mId),
-            m('p', 'Type:'),
-            m('p', details.mFlags === 14 ? 'Signed ID' : 'Anonymous ID'),
-            m('p', 'Owner node ID:'),
-            m('p', details.mPgpId),
-            m('p', 'Created on:'),
-            m(
-              'p',
-              typeof details.mPublishTS === 'object'
-                ? new Date(details.mPublishTS.xint64 * 1000).toLocaleString()
-                : 'undefiend'
-            ),
-            m('p', 'Last used:'),
-            m(
-              'p',
-              typeof details.mLastUsageTS === 'object'
-                ? new Date(details.mLastUsageTS.xint64 * 1000).toLocaleDateString()
-                : 'undefiend'
-            ),
-          ]),
-          m(
-            'button',
-            {
-              onclick: () =>
-                m.route.set('/chat/:userid/createdistantchat', {
-                  userid: v.attrs.id.mGroupId,
-                }),
-            },
-            'Chat'
-          ),
-          m('button.red', {}, 'Mail'),
-        ]
-      ),
-  };
-};
-
 module.exports = {
   sortUsers,
   sortIds,
@@ -23152,9 +23579,8 @@ module.exports = {
   UserAvatar,
   IdentityAvatar,
   contactlist,
-  SearchBar,
-  regularcontactInfo,
   isUsableIdentityId,
+  distantChatPid,
 };
  
 }); 

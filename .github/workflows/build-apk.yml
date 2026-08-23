@@ -53,11 +53,11 @@ jobs:
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rsWeb-${{ env.BUILD_DATE }}-g${{ env.GIT_HASH }}-debug
+          name: retroshare-web-${{ env.BUILD_DATE }}-g${{ env.GIT_HASH }}-debug
           path: app/build/outputs/apk/debug/*.apk
 
       - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rsWeb-${{ env.BUILD_DATE }}-g${{ env.GIT_HASH }}-release
+          name: retroshare-web-${{ env.BUILD_DATE }}-g${{ env.GIT_HASH }}-release
           path: app/build/outputs/apk/release/*.apk

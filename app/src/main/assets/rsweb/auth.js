@@ -277,7 +277,32 @@
               placeholder="Repeat password" autocomplete="new-password" required />
           </div>
           <button type="submit" id="rs-btn-create" class="rs-auth-btn">Create Profile</button>
+          <p class="rs-auth-switch">Already have a RetroShare key? <button type="button" data-show-form="import">Import it</button></p>
           <p class="rs-auth-switch">Already have a profile? <button type="button" data-show-form="login">Log in</button></p>
+        </form>
+        <form id="rs-form-import" style="display:none;">
+          <p class="rs-auth-help">Import an exported RetroShare profile (.asc) and create a new location using its existing PGP key.</p>
+          <div class="rs-auth-form-group">
+            <label class="rs-auth-label" for="rs-import-file">Profile File</label>
+            <input type="file" id="rs-import-file" class="rs-auth-file" accept=".asc,text/plain,application/pgp-keys" />
+          </div>
+          <div class="rs-auth-form-group">
+            <label class="rs-auth-label" for="rs-import-key">Exported Profile</label>
+            <textarea id="rs-import-key" class="rs-auth-input rs-auth-key" rows="5"
+              placeholder="Choose an .asc file or paste the exported profile here" spellcheck="false"></textarea>
+          </div>
+          <div class="rs-auth-form-group">
+            <label class="rs-auth-label" for="rs-import-nodename">Location Name</label>
+            <input type="text" id="rs-import-nodename" class="rs-auth-input"
+              placeholder="e.g. Phone" value="WebUI" required />
+          </div>
+          <div class="rs-auth-form-group">
+            <label class="rs-auth-label" for="rs-import-password">Profile Password</label>
+            <input type="password" id="rs-import-password" class="rs-auth-input"
+              placeholder="Password for the exported profile" autocomplete="current-password" required />
+          </div>
+          <button type="submit" id="rs-btn-import" class="rs-auth-btn">Import Profile</button>
+          <p class="rs-auth-switch"><button type="button" data-show-form="create">Create a new profile instead</button></p>
         </form>
         <div class="rs-service-status" role="status" aria-live="polite">
           <span id="rs-service-dot" class="rs-service-dot is-checking"></span>
@@ -300,17 +325,25 @@
     });
     document.getElementById('rs-form-login').addEventListener('submit', handleLogin);
     document.getElementById('rs-form-create').addEventListener('submit', handleCreate);
+    document.getElementById('rs-form-import').addEventListener('submit', handleImport);
+    document.getElementById('rs-import-file').addEventListener('change', handleImportFile);
   }
 
   function showAuthForm(mode, keepAlert = false) {
     const isLogin = mode === 'login';
+    const isCreate = mode === 'create';
     document.getElementById('rs-form-login').style.display = isLogin ? 'block' : 'none';
-    document.getElementById('rs-form-create').style.display = isLogin ? 'none' : 'block';
+    document.getElementById('rs-form-create').style.display = isCreate ? 'block' : 'none';
+    document.getElementById('rs-form-import').style.display = mode === 'import' ? 'block' : 'none';
     document.getElementById('rs-auth-subtitle').textContent = isLogin
       ? 'Welcome back. Sign in to your profile.'
-      : 'Create your private identity to get started.';
+      : isCreate
+        ? 'Create your private identity to get started.'
+        : 'Bring your existing RetroShare identity to this device.';
     if (!keepAlert) hideAlert();
-    const firstInput = document.querySelector(isLogin ? '#rs-login-password' : '#rs-create-username');
+    const firstInput = document.querySelector(isLogin
+      ? '#rs-login-password'
+      : isCreate ? '#rs-create-username' : '#rs-import-file');
     if (firstInput) firstInput.focus();
   }
 
@@ -445,6 +478,80 @@
       console.error(TAG, 'handleCreate: ❌ exception:', err.message);
       showAlert('Profile creation error: ' + err.message, 'error');
       setLoading(btn, false, 'Create Node Profile');
+    }
+  }
+
+  function isSuccessfulResult(result) {
+    if (typeof result === 'boolean') return result;
+    if (typeof result === 'number') return result === 0 || result === 1;
+    return !!result && typeof result === 'object' && result.errorNumber === 0;
+  }
+
+  function apiErrorMessage(response, fallback) {
+    const retval = response && response.retval;
+    const message = response && (response.errorMsg || response.errorMessage)
+      || (retval && typeof retval === 'object' && retval.errorMessage);
+    return message && String(message).trim() ? String(message).trim() : fallback;
+  }
+
+  async function handleImportFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      e.target.value = '';
+      showAlert('The selected profile is too large (maximum 5 MB).', 'error');
+      return;
+    }
+    try {
+      document.getElementById('rs-import-key').value = await file.text();
+      showAlert('Profile file loaded. Enter its password to continue.', 'success');
+    } catch (err) {
+      showAlert('Could not read the selected profile file.', 'error');
+    }
+  }
+
+  async function handleImport(e) {
+    e.preventDefault();
+    const keyContent = document.getElementById('rs-import-key').value.trim();
+    const nodeName = document.getElementById('rs-import-nodename').value.trim() || 'WebUI';
+    const password = document.getElementById('rs-import-password').value;
+    const btn = document.getElementById('rs-btn-import');
+
+    if (!keyContent) { showAlert('Choose an .asc profile file or paste its contents.', 'error'); return; }
+    if (!password) { showAlert('Enter the password for the exported profile.', 'error'); return; }
+
+    setLoading(btn, true, 'Importing Profile...');
+    hideAlert();
+
+    try {
+      const importRes = await rsApiCall('/rsAccounts/importIdentityFromString', { data: keyContent });
+      if (!importRes || !isSuccessfulResult(importRes.retval)) {
+        throw new Error(apiErrorMessage(importRes, 'The PGP profile could not be imported.'));
+      }
+
+      const pgpId = String(importRes.pgpId || importRes.gpgId || '').trim();
+      if (!pgpId) throw new Error('The imported profile did not return a PGP ID.');
+
+      const apiUser = 'mobile-' + pgpId;
+      const apiPass = await deriveApiToken(apiUser, password);
+      const createRes = await rsApiCall('/rsLoginHelper/createLocationV2', {
+        pgpId: pgpId,
+        locationName: nodeName,
+        pgpName: '',
+        password: password,
+        apiUser: apiUser,
+        apiPass: apiPass
+      });
+      if (!createRes || !isSuccessfulResult(createRes.retval)) {
+        throw new Error(apiErrorMessage(createRes, 'Could not create a location from this profile.'));
+      }
+
+      showAlert('Profile imported! Loading WebUI...', 'success');
+      finishAndLoad(apiUser, apiPass);
+    } catch (err) {
+      console.error(TAG, 'handleImport: failed:', err.message);
+      showAlert('Import failed: ' + err.message, 'error');
+      setLoading(btn, false, 'Import Profile');
     }
   }
 

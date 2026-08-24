@@ -99,7 +99,7 @@ android {
         val variant = this
         variant.outputs.all {
             val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
-            output.outputFileName = "rsWeb-v${variant.versionName}-${variant.name}.apk"
+            output.outputFileName = "retroshare-web-v${variant.versionName}-${variant.name}.apk"
         }
     }
 }

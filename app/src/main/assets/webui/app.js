@@ -911,7 +911,7 @@ const navbar = () => {
                       ? 'Connected to RetroShare Core'
                       : 'Connection Lost',
                   }),
-                  m('span.webui-version', { style: { fontSize: '0.7em' } }, 'v151'),
+                  m('span.webui-version', { style: { fontSize: '0.7em' } }, 'v153'),
                   m('i.fas.fa-sync-alt.refresh-icon', {
                     style: { cursor: 'pointer', fontSize: '0.8em' },
                     onclick: () => window.location.reload(true),
@@ -1034,7 +1034,7 @@ const MobileStatus = () => {
               m('small', statusbar.formatBytes(state.totalOut)),
             ]),
           ]),
-          m('.mobile-status-sheet__version', 'WebUI v151'),
+          m('.mobile-status-sheet__version', 'WebUI v153'),
         ])),
       ];
     },
@@ -10283,6 +10283,69 @@ function isEmbeddedImageSrc(src) {
   return /^data:image\//i.test(String(src).trim());
 }
 
+// Keep chat pictures inside the current page. A blank window opened here can
+// strand embedded browsers such as Android WebView without a usable Back entry.
+let chatImageViewer = null;
+let chatImageViewerPreviousOverflow = '';
+const CHAT_IMAGE_VIEWER_HISTORY_KEY = 'chatImageViewer';
+
+function removeChatImageViewer() {
+  if (!chatImageViewer) return;
+  chatImageViewer.remove();
+  chatImageViewer = null;
+  document.body.style.overflow = chatImageViewerPreviousOverflow;
+}
+
+function closeChatImageViewer() {
+  if (history.state && history.state[CHAT_IMAGE_VIEWER_HISTORY_KEY]) {
+    history.back();
+  } else {
+    removeChatImageViewer();
+  }
+}
+
+window.addEventListener('popstate', () => removeChatImageViewer());
+
+function openChatImageViewer(src) {
+  removeChatImageViewer();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'chat-image-viewer';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-label', 'Image preview');
+
+  const image = document.createElement('img');
+  image.className = 'chat-image-viewer__image';
+  image.src = src;
+  image.alt = 'Chat image';
+
+  const closeButton = document.createElement('button');
+  closeButton.className = 'chat-image-viewer__close';
+  closeButton.type = 'button';
+  closeButton.setAttribute('aria-label', 'Close image preview');
+  closeButton.innerHTML = '&times;';
+  closeButton.onclick = (event) => {
+    event.stopPropagation();
+    closeChatImageViewer();
+  };
+
+  overlay.append(image, closeButton);
+  overlay.onclick = (event) => {
+    if (event.target === overlay) closeChatImageViewer();
+  };
+  overlay.onkeydown = (event) => {
+    if (event.key === 'Escape') closeChatImageViewer();
+  };
+
+  chatImageViewerPreviousOverflow = document.body.style.overflow;
+  document.body.style.overflow = 'hidden';
+  document.body.appendChild(overlay);
+  chatImageViewer = overlay;
+  history.pushState({ ...(history.state || {}), [CHAT_IMAGE_VIEWER_HISTORY_KEY]: true }, '');
+  closeButton.focus();
+}
+
 function renderChatMessage(rawText) {
   if (!rawText) return '';
 
@@ -10325,12 +10388,7 @@ function renderChatMessage(rawText) {
               cursor: 'pointer',
               boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
             },
-            onclick: () => {
-              const w = window.open('');
-              if (w) {
-                w.document.write(`<body style="margin:0;background:#0f172a;display:flex;justify-content:center;align-items:center;min-height:100vh;"><img src="${src}" style="max-width:100%;max-height:100vh;object-fit:contain;"/></body>`);
-              }
-            }
+            onclick: () => openChatImageViewer(src),
           })
         );
       }
@@ -10364,12 +10422,7 @@ function renderChatMessage(rawText) {
         cursor: 'pointer',
         boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
       },
-      onclick: () => {
-        const w = window.open('');
-        if (w) {
-          w.document.write(`<body style="margin:0;background:#0f172a;display:flex;justify-content:center;align-items:center;min-height:100vh;"><img src="${src}" style="max-width:100%;max-height:100vh;object-fit:contain;"/></body>`);
-        }
-      }
+      onclick: () => openChatImageViewer(src),
     });
   }
 
@@ -18908,27 +18961,38 @@ function isUsableAddress(address) {
   return value !== '' && !value.toUpperCase().includes('INVALID') && value !== '0.0.0.0';
 }
 
-function parseIpv4Locator(value) {
-  const match = String(value || '').match(/ipv4:\/\/([^:\s]+):(\d+)/i);
+//  An entry of RsPeerDetails::ipAddressList is what sockaddr_storage_tostring()
+//  produced -- ipv4://1.2.3.4:1234, or ipv6://[fe80::1]:1234 since RsUrl wraps
+//  IPv6 hosts in brackets -- followed by the core's own marker, "    123 sec
+//  loc" or "    123 sec ext" (p3peers.cc, getPeerDetails).
+//
+//  That marker is the answer to "local or external", and it is worth more than
+//  deducing it from the address range: a peer behind CGNAT (100.64/10) or a
+//  double NAT has a private looking external address, and a loopback entry is
+//  not external at all.
+//
+//  One entry carries no marker: GetRetroshareInvite() clears extAddr and pushes
+//  the address here with a trailing space when it is IPv6, because the
+//  certificate format only carries IPv4 numbers. It is external by construction
+//  -- and it is exactly the one a peer added by short invite arrives with.
+function parseLocator(entry) {
+  const text = String(entry || '');
+  const match = text.match(/^\s*(?:ipv4|ipv6):\/\/(\[[^\]]+\]|[^:/\s]+):(\d+)/i);
   if (!match) return null;
-  return { address: match[1], port: Number(match[2]) };
-}
-
-function isPrivateIpv4(address) {
-  const octets = address.split('.').map(Number);
-  if (octets.length !== 4 || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
-    return false;
-  }
-  return octets[0] === 10 ||
-    (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
-    (octets[0] === 192 && octets[1] === 168) ||
-    (octets[0] === 169 && octets[1] === 254);
+  //  RsUrl escapes the % of a link-local scope id as %25, as the RFC asks; put
+  //  it back rather than showing fe80::1%25eth0 to a human.
+  const host = (match[1].startsWith('[') ? match[1].slice(1, -1) : match[1]).replace(/%25/gi, '%');
+  return {
+    address: host,
+    port: Number(match[2]),
+    scope: /\bsec\s+loc\b/i.test(text) ? 'local' : 'external',
+  };
 }
 
 function displayedAddresses(detail, knownAddresses) {
-  const locators = knownAddresses.map(parseIpv4Locator).filter(Boolean);
-  const localLocator = locators.find((locator) => isPrivateIpv4(locator.address));
-  const externalLocator = locators.find((locator) => !isPrivateIpv4(locator.address));
+  const locators = knownAddresses.map(parseLocator).filter(Boolean);
+  const localLocator = locators.find((locator) => locator.scope === 'local');
+  const externalLocator = locators.find((locator) => locator.scope === 'external');
 
   return {
     localAddress: isUsableAddress(detail.localAddr) ? detail.localAddr : localLocator && localLocator.address,
@@ -23625,6 +23689,7 @@ module.exports = {
 require.register("statistics/statistics", function(exports, require, module) { 
 const m = require('mithril');
 const rs = require('rswebui');
+const NetworkData = require('network/network_data');
 
 const COLORS = ['#0788cb', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4', '#ec4899', '#84cc16', '#64748b', '#f97316'];
 const SERVICE_NAMES = {
@@ -23645,13 +23710,29 @@ function idString(value) {
   return rs.idToHex(value);
 }
 
-function formatBytes(bytes) {
-  const value = Number(bytes) || 0;
-  if (!value) return '0 B';
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-  const unit = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
-  return `${(value / (1024 ** unit)).toFixed(unit ? 1 : 0)} ${units[unit]}`;
+//  rs.formatBytes is the one every other page uses -- the statusbar, the chat,
+//  the file lists. A second formatter here would print 1.5 MiB where the rest of
+//  the interface prints 1.5 MB for the same number.
+const formatBytes = rs.formatBytes;
+
+//  network_data already fetches the friend list and each peer's details, and
+//  keeps the result in NetworkData.gpgDetails for the whole session. Reading
+//  that costs nothing, where a second collection of its own would mean one
+//  getPeerDetails per friend, all at once, next to the traffic poll.
+function friendNamesFromCache() {
+  const names = {};
+  Object.values(NetworkData.gpgDetails || {}).forEach((profile) => {
+    (profile.locations || []).forEach((location) => {
+      const id = idString(location.id);
+      if (id) names[id] = profile.name || location.name || id;
+    });
+  });
+  return names;
 }
+
+//  Friends do not appear every five seconds: the traffic figures are refreshed
+//  on their own beat, the friend list on a much slower one.
+const FRIENDS_REFRESH_MS = 60000;
 
 // RetroShare wraps uint64_t values as { xint64, xstr64 } because JSON numbers
 // cannot safely represent every 64-bit integer. Prefer the decimal string so a
@@ -23705,7 +23786,10 @@ function PieChart() {
       return m('.traffic-pie', [
         m('svg[viewBox="0 0 120 120"][role=img]', { 'aria-label': vnode.attrs.label }, [
           m('circle[cx=60][cy=60][r=44].traffic-pie__track'),
-          rows.map((row, index) => {
+          //  A dash offset of zero starts at three o'clock; the group turns the
+          //  segments back to twelve, where a pie chart is read from. Only the
+          //  segments: the totals in the middle stay upright.
+          m('g[transform="rotate(-90 60 60)"]', rows.map((row, index) => {
             const length = total ? (row.total / total) * 276.46 : 0;
             const segment = m('circle[cx=60][cy=60][r=44].traffic-pie__segment', {
               stroke: COLORS[index % COLORS.length],
@@ -23714,7 +23798,7 @@ function PieChart() {
             }, m('title', `${row.label}: ${formatBytes(row.total)}`));
             offset += length;
             return segment;
-          }),
+          })),
           m('text[x=60][y=57][text-anchor=middle].traffic-pie__value', formatBytes(total)),
           m('text[x=60][y=70][text-anchor=middle].traffic-pie__caption', 'total traffic'),
         ]),
@@ -23755,48 +23839,57 @@ module.exports = {
   oninit(vnode) {
     vnode.state.incoming = [];
     vnode.state.outgoing = [];
-    vnode.state.friendNames = {};
-    vnode.state.loading = true;
     vnode.state.error = '';
     vnode.state.cumulativeServices = null;
     vnode.state.cumulativePeers = null;
     vnode.state.load = async () => {
-      const [serviceResponse, peerResponse] = await Promise.all([
-        rs.rsJsonApiRequest('/rsConfig/getCumulativeTrafficByService'),
-        rs.rsJsonApiRequest('/rsConfig/getCumulativeTrafficByPeer'),
-      ]);
-      const serviceBody = serviceResponse.body || {};
-      const peerBody = peerResponse.body || {};
-      if (serviceResponse.status === 200 && peerResponse.status === 200 && serviceBody.retval && peerBody.retval) {
-        vnode.state.cumulativeServices = serviceBody.stats || [];
-        vnode.state.cumulativePeers = peerBody.stats || [];
-        vnode.state.error = '';
-      } else {
-        // Older cores do not expose the cumulative API. Retain the live-window
-        // view as a compatibility fallback instead of leaving the page empty.
-        const response = await rs.rsJsonApiRequest('/rsConfig/getTrafficInfo');
-        const body = response.body || {};
-        if (response.status === 200 && body.retval) {
-          vnode.state.incoming = Array.isArray(body.in_lst) ? body.in_lst : [];
-          vnode.state.outgoing = Array.isArray(body.out_lst) ? body.out_lst : [];
-          vnode.state.error = 'This Core only provides the current traffic window; cumulative totals require the newer traffic statistics API.';
-        } else {
-          vnode.state.error = 'Traffic statistics are not available from this RetroShare Core.';
+      //  Two requests per run, every five seconds, plus whatever the Refresh
+      //  button adds. Without this the runs stack up as soon as one of them is
+      //  slower than the interval -- and on a phone they are, each answer
+      //  closing its connection.
+      if (vnode.state.loading) return;
+      vnode.state.loading = true;
+      try {
+        if (Date.now() - vnode.state.friendsRefreshedAt > FRIENDS_REFRESH_MS) {
+          vnode.state.refreshFriends();
         }
+        const [serviceResponse, peerResponse] = await Promise.all([
+          rs.rsJsonApiRequest('/rsConfig/getCumulativeTrafficByService'),
+          rs.rsJsonApiRequest('/rsConfig/getCumulativeTrafficByPeer'),
+        ]);
+        const serviceBody = serviceResponse.body || {};
+        const peerBody = peerResponse.body || {};
+        if (serviceResponse.status === 200 && peerResponse.status === 200 && serviceBody.retval && peerBody.retval) {
+          vnode.state.cumulativeServices = serviceBody.stats || [];
+          vnode.state.cumulativePeers = peerBody.stats || [];
+          vnode.state.error = '';
+        } else {
+          // Older cores do not expose the cumulative API. Retain the live-window
+          // view as a compatibility fallback instead of leaving the page empty.
+          const response = await rs.rsJsonApiRequest('/rsConfig/getTrafficInfo');
+          const body = response.body || {};
+          if (response.status === 200 && body.retval) {
+            vnode.state.incoming = Array.isArray(body.in_lst) ? body.in_lst : [];
+            vnode.state.outgoing = Array.isArray(body.out_lst) ? body.out_lst : [];
+            vnode.state.error = 'This Core only provides the current traffic window; cumulative totals require the newer traffic statistics API.';
+          } else {
+            vnode.state.error = 'Traffic statistics are not available from this RetroShare Core.';
+          }
+        }
+      } finally {
+        //  Whatever happened, the page must not stay locked on "loading": the
+        //  guard above would then never let another run through.
+        vnode.state.loading = false;
+        m.redraw();
       }
-      vnode.state.loading = false;
     };
-    vnode.state.loadFriends = async () => {
-      const listResponse = await rs.rsJsonApiRequest('/rsPeers/getFriendList');
-      const ids = (listResponse.body && listResponse.body.sslIds) || [];
-      await Promise.all(ids.map(async (sslId) => {
-        const detailResponse = await rs.rsJsonApiRequest('/rsPeers/getPeerDetails', { sslId });
-        const detail = detailResponse.body && detailResponse.body.det;
-        if (detail) vnode.state.friendNames[idString(detail.id || sslId)] = detail.name || detail.location || idString(sslId);
-      }));
+    vnode.state.refreshFriends = () => {
+      vnode.state.friendsRefreshedAt = Date.now();
+      NetworkData.refreshGpgDetails().then(() => m.redraw()).catch(() => {});
     };
+    vnode.state.friendsRefreshedAt = 0;
+    vnode.state.loading = false;
     vnode.state.load();
-    vnode.state.loadFriends();
     vnode.state.timer = setInterval(vnode.state.load, 5000);
   },
   onremove(vnode) { clearInterval(vnode.state.timer); },
@@ -23805,9 +23898,10 @@ module.exports = {
       const id = Number(value) || 0;
       return SERVICE_NAMES[id] || `Service 0x${id.toString(16).padStart(4, '0')}`;
     };
+    const friendNames = friendNamesFromCache();
     const friendLabel = (value) => {
       const id = idString(value) || 'unknown';
-      return vnode.state.friendNames[id] || (id === 'unknown' ? 'Unknown peer' : `Peer ${id.slice(0, 8)}…`);
+      return friendNames[id] || (id === 'unknown' ? 'Unknown peer' : `Peer ${id.slice(0, 8)}…`);
     };
     const serviceRows = vnode.state.cumulativeServices
       ? cumulativeRows(vnode.state.cumulativeServices, serviceLabel)

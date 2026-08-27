@@ -809,6 +809,20 @@ const boards = require('boards/boards');
 const config = require('config/config_resolver');
 const statistics = require('statistics/statistics');
 const statusbar = require('statusbar');
+const networkState = require('network/network_state');
+const peopleState = require('people/people_state');
+const { ChatRoomsModel, receiveLobbyChatMessage } = require('chat/chat_state');
+
+const sumCounts = (counts) => Object.values(counts || {})
+  .reduce((total, count) => total + Number(count || 0), 0);
+
+function navigationCount(name) {
+  if (name === 'network') return sumCounts(networkState.State.unreadChatCount);
+  if (name === 'people') return sumCounts(peopleState.State.unreadChatCount);
+  if (name === 'chat') return sumCounts(ChatRoomsModel.unreadCount);
+  if (name === 'mail') return mail.Messages.unreadCount();
+  return 0;
+}
 
 const navIcon = {
   home: 'i.fas.fa-home.sidenav-icon',
@@ -857,13 +871,18 @@ const navbar = () => {
           m('.nav-menu__box', { style: { flex: 1 } }, [
             Object.keys(vnode.attrs.links).map((linkName) => {
               const active = m.route.get().split('/')[1] === linkName;
+              const count = navigationCount(linkName);
               return m(
                 m.route.Link,
                 {
                   href: vnode.attrs.links[linkName],
                   class: (active ? 'active-link' : '') + ' item',
                 },
-                [m(navIcon[linkName]), m('span', linkName.charAt(0).toUpperCase() + linkName.slice(1))]
+                [
+                  m(navIcon[linkName]),
+                  m('span', linkName.charAt(0).toUpperCase() + linkName.slice(1)),
+                  count > 0 && m('b.nav-unread-badge', count),
+                ]
               );
             }),
             m(
@@ -911,7 +930,7 @@ const navbar = () => {
                       ? 'Connected to RetroShare Core'
                       : 'Connection Lost',
                   }),
-                  m('span.webui-version', { style: { fontSize: '0.7em' } }, 'v153'),
+                  m('span.webui-version', { style: { fontSize: '0.7em' } }, 'v154'),
                   m('i.fas.fa-sync-alt.refresh-icon', {
                     style: { cursor: 'pointer', fontSize: '0.8em' },
                     onclick: () => window.location.reload(true),
@@ -1034,7 +1053,7 @@ const MobileStatus = () => {
               m('small', statusbar.formatBytes(state.totalOut)),
             ]),
           ]),
-          m('.mobile-status-sheet__version', 'WebUI v153'),
+          m('.mobile-status-sheet__version', 'WebUI v154'),
         ])),
       ];
     },
@@ -1048,7 +1067,11 @@ const MobileNavigation = () => {
     href,
     class: `mobile-bottom-nav__item${routeName() === name ? ' active' : ''}`,
     onclick: () => (isMoreOpen = false),
-  }, [m(navIcon[name]), m('span', name.charAt(0).toUpperCase() + name.slice(1))]);
+  }, [
+    m(navIcon[name]),
+    m('span', name.charAt(0).toUpperCase() + name.slice(1)),
+    navigationCount(name) > 0 && m('b.nav-unread-badge', navigationCount(name)),
+  ]);
 
   return {
     view: () => [
@@ -1085,6 +1108,24 @@ const MobileNavigation = () => {
 
 const Layout = () => {
   return {
+    oninit: () => {
+      mail.Messages.load();
+      [rs.RsEventsType.MAIL_STATUS, rs.RsEventsType.MAIL_TAG].forEach((eventType) => {
+        if (!rs.events[eventType]) {
+          rs.events[eventType] = {
+            handler: (event, owner) => owner.notify(event),
+            notify: () => {},
+          };
+        }
+        rs.events[eventType].notify = () => mail.Messages.refreshSoon();
+      });
+      if (!rs.events[15]) return;
+      rs.events[15].notify = (message) => {
+        networkState.receiveDirectChatMessage(message);
+        peopleState.receiveDistantChatMessage(message);
+        receiveLobbyChatMessage(message);
+      };
+    },
     view: (vnode) =>
       m('.content', [
         m(navbar, {
@@ -8331,6 +8372,47 @@ function scrollChatToBottom() {
   }, 50);
 }
 
+//  Whether the conversation is still pinned to its last message. It starts
+//  pinned, follows the user's own scrolling, and decides whether a redraw is
+//  allowed to jump back down -- without it, reading anything older is
+//  impossible: the pane redraws on every event and every poll answer, and each
+//  one dragged the reader back to the bottom a few tens of milliseconds later.
+let chatStickToBottom = true;
+
+//  A little slack, because a reader who stops one line short of the end still
+//  means "keep following", and because scrollTop is fractional on zoomed or
+//  high-density displays.
+const CHAT_STICK_SLACK_PX = 80;
+
+function updateChatStickToBottom(element) {
+  if (!element) return;
+  chatStickToBottom =
+    element.scrollHeight - element.scrollTop - element.clientHeight <= CHAT_STICK_SLACK_PX;
+}
+
+//  Far enough from the top to have the next slice ready before the reader gets
+//  there, close enough not to fire on the first flick of a long conversation.
+const CHAT_LOAD_OLDER_AT_PX = 120;
+
+function loadOlderWhenAtTop(element) {
+  if (!element || element.scrollTop > CHAT_LOAD_OLDER_AT_PX) return;
+
+  //  Older messages are inserted above the ones on screen, which pushes
+  //  everything down by exactly the height they add. Put that height back into
+  //  scrollTop and the reader does not move at all -- without it the pane jumps
+  //  to a different part of the conversation each time a slice lands.
+  const previousHeight = element.scrollHeight;
+  const previousTop = element.scrollTop;
+
+  ChatLobbyModel.loadOlderHistory(() => {
+    requestAnimationFrame(() => {
+      const pane = document.querySelector('.chat-hub-messages');
+      if (!pane) return;
+      pane.scrollTop = previousTop + (pane.scrollHeight - previousHeight);
+    });
+  });
+}
+
 function renderUserTooltip(gxsId, name) {
   const details = ChatHubState.gxsDetails[gxsId];
   if (!details) return null;
@@ -8580,8 +8662,21 @@ const ChatConversationView = () => {
           m(
             '.chat-hub-messages' + (isRoom ? '.compact-container' : ''),
             {
-              oncreate: () => scrollChatToBottom(),
-              onupdate: () => scrollChatToBottom(),
+              oncreate: () => {
+                chatStickToBottom = true;
+                scrollChatToBottom();
+              },
+              onupdate: () => {
+                if (chatStickToBottom) scrollChatToBottom();
+              },
+              onscroll: (event) => {
+                //  A scroll must not trigger a redraw: mithril redraws after
+                //  every handler by default, and this one fires continuously
+                //  while the reader drags the pane.
+                event.redraw = false;
+                updateChatStickToBottom(event.target);
+                loadOlderWhenAtTop(event.target);
+              },
             },
             ChatLobbyModel.messages
           ),
@@ -9441,6 +9536,10 @@ const Layout = {
     if (lobbyId && ChatHubState.selectedRoomId !== lobbyId) {
       ChatHubState.mobilePane = 'detail';
       ChatHubState.selectedRoomId = lobbyId;
+      //  Another room, another conversation: it opens on its last message,
+      //  whatever the reader had scrolled to in the previous one. The pane
+      //  itself is reused rather than recreated, so its oncreate does not run.
+      chatStickToBottom = true;
       ChatLobbyModel.loadLobby(lobbyId);
     } else if (!lobbyId) {
       ChatHubState.mobilePane = 'list';
@@ -9448,6 +9547,7 @@ const Layout = {
   },
   onremove: () => {
     ChatLobbyModel.stopStatusPolling();
+    ChatLobbyModel.stopParticipantPolling();
     window.removeEventListener('click', Layout.dismissMenu);
   },
   view: () => {
@@ -9535,20 +9635,6 @@ const Layout = {
               ]),
               subscribedRooms.map((info) => {
                 const hexId = rs.idToHex(info.lobby_id);
-                let count = 0;
-                let hasOwn = false;
-                if (info.gxs_ids) {
-                  if (Array.isArray(info.gxs_ids)) {
-                    count = info.gxs_ids.length;
-                    hasOwn = info.gxs_ids.some((u) => u.key === info.gxs_id);
-                  } else if (typeof info.gxs_ids === 'object') {
-                    count = Object.keys(info.gxs_ids).length;
-                    hasOwn = info.gxs_ids[info.gxs_id] !== undefined;
-                  }
-                }
-                if (!hasOwn && info.gxs_id && info.gxs_id !== '00000000000000000000000000000000') {
-                  count++;
-                }
                 return m(
                   '.chat-room-list-item' +
                     (isSelected(info, 'subscribed') ? '.selected' : ''),
@@ -9565,7 +9651,8 @@ const Layout = {
                       m('.room-name', info.lobby_name || '<unnamed>'),
                       m('.room-topic', info.lobby_topic || 'No topic'),
                     ]),
-                    count > 0 && m('.room-badge', count),
+                    (ChatRoomsModel.unreadCount[hexId] || 0) > 0
+                      && m('.room-badge', ChatRoomsModel.unreadCount[hexId]),
                   ]
                 );
               }),
@@ -9578,7 +9665,7 @@ const Layout = {
               ]),
               publicRooms.map((info) => {
                 const hexId = rs.idToHex(info.lobby_id);
-                const count = info.total_number_of_peers || 0;
+                const participantCount = info.total_number_of_peers || 0;
                 return m(
                   '.chat-room-list-item.public-room' +
                     (isSelected(info, 'public') ? '.selected' : ''),
@@ -9595,7 +9682,9 @@ const Layout = {
                       m('.room-name', info.lobby_name || '<unnamed>'),
                       m('.room-topic', info.lobby_topic || 'No topic'),
                     ]),
-                    count > 0 && m('.room-badge', count),
+                    participantCount > 0 && m('.room-badge', {
+                      title: `${participantCount} participant${participantCount === 1 ? '' : 's'}`,
+                    }, participantCount),
                   ]
                 );
               }),
@@ -10287,13 +10376,25 @@ function isEmbeddedImageSrc(src) {
 // strand embedded browsers such as Android WebView without a usable Back entry.
 let chatImageViewer = null;
 let chatImageViewerPreviousOverflow = '';
+let chatImageViewerOpener = null;
+let chatImageViewerKeyHandler = null;
 const CHAT_IMAGE_VIEWER_HISTORY_KEY = 'chatImageViewer';
 
 function removeChatImageViewer() {
   if (!chatImageViewer) return;
+  if (chatImageViewerKeyHandler) {
+    document.removeEventListener('keydown', chatImageViewerKeyHandler, true);
+    chatImageViewerKeyHandler = null;
+  }
   chatImageViewer.remove();
   chatImageViewer = null;
   document.body.style.overflow = chatImageViewerPreviousOverflow;
+  //  Put the focus back where it was taken from, so closing the preview does
+  //  not leave the caret on <body> with the message list scrolled away.
+  if (chatImageViewerOpener && document.contains(chatImageViewerOpener)) {
+    chatImageViewerOpener.focus();
+  }
+  chatImageViewerOpener = null;
 }
 
 function closeChatImageViewer() {
@@ -10334,12 +10435,30 @@ function openChatImageViewer(src) {
   overlay.onclick = (event) => {
     if (event.target === overlay) closeChatImageViewer();
   };
-  overlay.onkeydown = (event) => {
-    if (event.key === 'Escape') closeChatImageViewer();
+
+  //  The overlay says role=dialog and aria-modal=true, so it has to behave like
+  //  one. Listening on the overlay only caught what bubbled through it: tapping
+  //  the picture moves the focus to <body> and Escape went dead from then on.
+  //  Listening on the document, in the capture phase, means Escape closes the
+  //  preview wherever the focus has drifted, and Tab cannot walk out of it into
+  //  the page underneath -- the close button is the only thing to land on.
+  chatImageViewerKeyHandler = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeChatImageViewer();
+    } else if (event.key === 'Tab') {
+      event.preventDefault();
+      closeButton.focus();
+    }
   };
+  document.addEventListener('keydown', chatImageViewerKeyHandler, true);
 
   chatImageViewerPreviousOverflow = document.body.style.overflow;
   document.body.style.overflow = 'hidden';
+  //  Captured before the overlay steals the focus, and restored on close.
+  chatImageViewerOpener = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
   document.body.appendChild(overlay);
   chatImageViewer = overlay;
   history.pushState({ ...(history.state || {}), [CHAT_IMAGE_VIEWER_HISTORY_KEY]: true }, '');
@@ -10539,6 +10658,7 @@ const ChatRoomsModel = {
   allRooms: [],
   knownSubscrIds: [],
   subscribedRooms: {},
+  unreadCount: {},
   loadPublicRooms() {
     rs.rsJsonApiRequest(
       '/rsChats/getListOfNearbyChatLobbies',
@@ -10736,6 +10856,76 @@ const ChatLobbyModel = {
   lastLobbyId: null,
   distantChatStatus: null,
   statusPollInterval: null,
+  participantPollInterval: null,
+
+  updateParticipants(detail) {
+    if (!detail) return;
+    const byId = new Map();
+    if (detail.gxs_ids) {
+      if (Array.isArray(detail.gxs_ids)) {
+        detail.gxs_ids.forEach((entry) => {
+          const key = entry && entry.key;
+          if (key) byId.set(key, {
+            key,
+            name: rs.userList.username(key) || key,
+            lastAct: get64Num(entry.value),
+          });
+        });
+      } else if (typeof detail.gxs_ids === 'object') {
+        Object.keys(detail.gxs_ids).forEach((key) => byId.set(key, {
+          key,
+          name: rs.userList.username(key) || key,
+          lastAct: get64Num(detail.gxs_ids[key]),
+        }));
+      }
+    }
+
+    const ownId = detail.gxs_id;
+    if (ownId && ownId !== '00000000000000000000000000000000' && !byId.has(ownId)) {
+      byId.set(ownId, {
+        key: ownId,
+        name: rs.userList.username(ownId) || ownId,
+        lastAct: Math.floor(Date.now() / 1000),
+      });
+    }
+    this.users = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
+  },
+
+  rememberLiveParticipant(chatMessage) {
+    const cid = chatMessage && chatMessage.chat_id;
+    if (!cid || cid.type !== 3 || rs.idToHex(cid.lobby_id) !== this.lastLobbyId) return;
+    const key = rs.idToHex(chatMessage.lobby_peer_gxs_id || chatMessage.peerId);
+    if (!key || /^0+$/.test(key)) return;
+    const existing = this.users.find((user) => user.key === key);
+    if (existing) {
+      existing.lastAct = chatMessage.sendTime || Math.floor(Date.now() / 1000);
+    } else {
+      this.users.push({
+        key,
+        name: rs.userList.username(key) || chatMessage.peerName || key,
+        lastAct: chatMessage.sendTime || Math.floor(Date.now() / 1000),
+      });
+    }
+  },
+
+  startParticipantPolling(lobbyId) {
+    this.stopParticipantPolling();
+    const refresh = () => loadLobbyDetails(lobbyId, (detail) => {
+      if (!detail || this.lastLobbyId !== lobbyId) return;
+      this.currentLobby = { ...this.currentLobby, ...detail, chatType: 3 };
+      this.updateParticipants(detail);
+      m.redraw();
+    });
+    refresh();
+    this.participantPollInterval = setInterval(refresh, 5000);
+  },
+
+  stopParticipantPolling() {
+    if (this.participantPollInterval) {
+      clearInterval(this.participantPollInterval);
+      this.participantPollInterval = null;
+    }
+  },
 
   pollDistantChatStatus() {
     if (!this.currentLobby || this.currentLobby.chatType !== 2) return;
@@ -10829,7 +11019,12 @@ const ChatLobbyModel = {
     }
   },
 
-  loadHistory(id, type) {
+  //  How much of a conversation is on screen when it opens. Small on purpose:
+  //  every room opening pays for it, and on a phone each request is a fresh
+  //  connection on a core that answers one at a time.
+  HISTORY_PAGE: 20,
+
+  historyChatPeerId(id, type) {
     const chatPeerId = {
       broadcast_status_peer_id: '00000000000000000000000000000000',
       type,
@@ -10841,19 +11036,65 @@ const ChatLobbyModel = {
     if (type === 3) chatPeerId.lobby_id.xstr64 = id;
     else if (type === 2) chatPeerId.distant_chat_id = id;
     else if (type === 1) chatPeerId.peer_id = id;
+    return chatPeerId;
+  },
+
+  loadHistory(id, type) {
+    this.historyLoaded = this.HISTORY_PAGE;
+    this.historyExhausted = false;
+    this.historyLoading = false;
 
     rs.rsJsonApiRequest(
       '/rsHistory/getMessages',
       {
-        chatPeerId,
-        loadCount: 20,
+        chatPeerId: this.historyChatPeerId(id, type),
+        loadCount: this.HISTORY_PAGE,
       },
       (data, success) => {
         if (success && data.msgs) {
+          if (data.msgs.length < this.HISTORY_PAGE) this.historyExhausted = true;
           this.addMessages(data.msgs);
         }
       }
     );
+  },
+
+  //  Reading further back. p3HistoryMgr::getMessages takes a count and nothing
+  //  else -- no cursor, no "before this message" -- and always answers with the
+  //  newest ones, so the only way to see older text is to ask for a bigger slice
+  //  and let addMessages() drop what is already here. It re-sends what we hold,
+  //  which is the price of that API; a page is small and the core keeps ten days
+  //  at most anyway (mMaxStorageDurationSeconds).
+  loadOlderHistory(done) {
+    const detail = this.currentLobby;
+    if (!detail || this.historyLoading || this.historyExhausted) return false;
+
+    const id = this.lastLobbyId;
+    if (!id) return false;
+
+    this.historyLoading = true;
+    const wanted = (this.historyLoaded || this.HISTORY_PAGE) + this.HISTORY_PAGE * 2;
+
+    rs.rsJsonApiRequest(
+      '/rsHistory/getMessages',
+      {
+        chatPeerId: this.historyChatPeerId(id, detail.chatType),
+        loadCount: wanted,
+      },
+      (data, success) => {
+        this.historyLoading = false;
+        if (!success || !data.msgs) {
+          if (done) done();
+          return;
+        }
+        //  Fewer than asked for means the core has nothing older left.
+        if (data.msgs.length < wanted) this.historyExhausted = true;
+        this.historyLoaded = wanted;
+        this.addMessages(data.msgs);
+        if (done) done();
+      }
+    );
+    return true;
   },
   loadAllHistoryForRoom(lobbyId, callback) {
     ChatHubState.isHistoryLoading = true;
@@ -10906,8 +11147,25 @@ const ChatLobbyModel = {
         lobby_id: { xstr64: lobbyId },
         own_id: nick,
       },
-      () => {
+      (data, success) => {
+        if (!success || !data || !data.retval) return;
+
+        // Keep the subscription in the RetroShare profile so the core joins
+        // this room again after a restart. Recent cores also enable this from
+        // joinVisibleChatLobby, but doing it explicitly preserves the expected
+        // behaviour with cores where joining only lasts for the current run.
+        rs.rsJsonApiRequest(
+          '/rsChats/setLobbyAutoSubscribe',
+          {
+            lobby_id: { xstr64: lobbyId },
+            autoSubscribe: true,
+          },
+          () => { },
+          true
+        );
+
         loadLobbyDetails(lobbyId, (info) => {
+          if (!info) return;
           ChatRoomsModel.subscribedRooms[lobbyId] = info;
           ChatRoomsModel.loadSubscribedRooms(() => {
             m.route.set('/chat/:lobby', { lobby: rs.idToHex(info.lobby_id) });
@@ -10948,7 +11206,9 @@ const ChatLobbyModel = {
   },
   loadLobby(currentlobbyid) {
     this.stopStatusPolling();
+    this.stopParticipantPolling();
     this.lastLobbyId = currentlobbyid;
+    ChatRoomsModel.unreadCount[currentlobbyid] = 0;
 
     const finishLoad = (detail) => {
       this.setupAction = this.setIdentity;
@@ -10966,76 +11226,50 @@ const ChatLobbyModel = {
         this.addMessages(l);
       });
 
-      rs.events[15].notify = (chatMessage) => {
-        const msgCid = chatMessage.chat_id;
-        let msgId;
-
-        if (msgCid.type === 3) {
-          msgId = rs.idToHex(msgCid.lobby_id);
-        } else if (msgCid.type === 2) {
-          msgId = rs.idToHex(msgCid.distant_chat_id);
-        } else if (msgCid.type === 1) {
-          msgId = rs.idToHex(msgCid.peer_id);
-        } else {
-          msgId = rs.idToHex(msgCid);
-        }
-
-        if (msgId === currentlobbyid) {
-          this.addMessages([chatMessage]);
-        }
-      };
-
-      let list = [];
-      if (detail.gxs_ids) {
-        if (Array.isArray(detail.gxs_ids)) {
-          list = detail.gxs_ids.map((u) => {
-            const key = u.key;
-            return { key, name: rs.userList.username(key) || key, lastAct: get64Num(u.value) };
-          });
-        } else if (typeof detail.gxs_ids === 'object') {
-          list = Object.keys(detail.gxs_ids).map((key) => {
-            return { key, name: rs.userList.username(key) || key, lastAct: get64Num(detail.gxs_ids[key]) };
-          });
-        }
-      }
-
-      const ownId = detail.gxs_id;
-      if (ownId && ownId !== '00000000000000000000000000000000') {
-        const hasOwn = list.some((u) => u.key === ownId);
-        if (!hasOwn) {
-          list.push({
-            key: ownId,
-            name: rs.userList.username(ownId) || ownId,
-            lastAct: Math.floor(Date.now() / 1000)
-          });
-        }
-      }
-
-      if (list.length === 0) {
-        list = [{ key: ownId || '', name: rs.userList.username(ownId) || detail.lobby_name || '???', lastAct: Math.floor(Date.now() / 1000) }];
-      }
-
-      list.sort((a, b) => a.name.localeCompare(b.name));
-      this.users = list;
+      this.updateParticipants(detail);
 
       if (detail.chatType === 2) {
         this.startStatusPolling();
+      } else if (detail.chatType === 3) {
+        this.startParticipantPolling(currentlobbyid);
       }
 
       m.redraw();
     };
 
-    loadLobbyDetails(currentlobbyid, (detail) => {
+    const isDistantChatId = /^[0-9a-f]{32}$/i.test(String(currentlobbyid));
+    const loadDetails = (attempt = 0) => loadLobbyDetails(currentlobbyid, (detail) => {
       if (detail) {
         finishLoad(detail);
-      } else {
+        return;
+      }
+
+      // Public lobby IDs are uint64 decimal strings. Passing one to the
+      // distant-chat fallback makes the core construct a 128-bit tunnel ID
+      // from (for example) a 20-character decimal value and can terminate the
+      // JSON API listener. Only a real 32-hex-character tunnel ID may use it.
+      if (isDistantChatId) {
         loadDistantChatDetails(currentlobbyid, (dDetail) => {
-          if (dDetail) {
-            finishLoad(dDetail);
-          }
+          if (dDetail) finishLoad(dDetail);
         });
+        return;
+      }
+
+      // A newly joined room may not be immediately visible through
+      // getChatLobbyInfo. Prefer the lobby data already loaded by the room
+      // lists, then retry briefly while the core completes the subscription.
+      const cached = ChatRoomsModel.subscribedRooms[currentlobbyid]
+        || (ChatRoomsModel.allRooms || []).find(
+          (room) => rs.idToHex(room.lobby_id) === currentlobbyid
+        );
+      if (cached) {
+        finishLoad({ ...cached, chatType: 3 });
+      } else if (attempt < 3) {
+        setTimeout(() => loadDetails(attempt + 1), 250 * (attempt + 1));
       }
     });
+
+    loadDetails();
   },
   loadPublicLobby(currentlobbyid) {
     this.setupAction = this.enterPublicLobby;
@@ -11142,6 +11376,22 @@ const ChatHubState = {
   },
 };
 
+function receiveLobbyChatMessage(chatMessage) {
+  const cid = chatMessage && chatMessage.chat_id;
+  if (!cid || cid.type !== 3) return;
+  const lobbyId = rs.idToHex(cid.lobby_id);
+  if (!lobbyId) return;
+  ChatLobbyModel.rememberLiveParticipant(chatMessage);
+  const isOpen = m.route.get().split('/')[1] === 'chat'
+    && ChatLobbyModel.lastLobbyId === lobbyId
+    && (window.innerWidth > 700 || ChatHubState.mobilePane === 'detail');
+  if (isOpen) ChatLobbyModel.addMessages([chatMessage]);
+  else if (chatMessage.incoming === true) {
+    ChatRoomsModel.unreadCount[lobbyId] = (ChatRoomsModel.unreadCount[lobbyId] || 0) + 1;
+    m.redraw();
+  }
+}
+
 module.exports = {
   get64Num,
   loadLobbyDetails,
@@ -11158,6 +11408,7 @@ module.exports = {
   Message,
   ChatLobbyModel,
   ChatHubState,
+  receiveLobbyChatMessage,
 };
  
 }); 
@@ -16806,6 +17057,43 @@ const Messages = {
   personal: [],
   todo: [],
   later: [],
+  refreshTimer: null,
+  unread: 0,
+  //  The badge is read from the navigation view, so it is asked for on every
+  //  redraw -- once for the rail, twice more for the bottom bar. Counting is a
+  //  full pass over the inbox, so it happens when the inbox changes instead:
+  //  after a load, and after a message is marked read here.
+  recountUnread() {
+    Messages.unread = (Messages.inbox || []).filter((msg) => {
+      const status = msg.msgflags & 0xf0;
+      return (status === util.RS_MSG_NEW || status === util.RS_MSG_UNREAD_BY_USER)
+        && !(msg.msgflags & util.RS_MSG_TRASH)
+        && !(msg.msgflags & util.RS_MSG_SPAM);
+    }).length;
+    return Messages.unread;
+  },
+  unreadCount() {
+    return Messages.unread;
+  },
+  refreshSoon() {
+    if (Messages.refreshTimer) return;
+    Messages.refreshTimer = setTimeout(() => {
+      Messages.refreshTimer = null;
+      Messages.load();
+    }, 250);
+  },
+  markReadLocally(msgId) {
+    Messages.all.forEach((msg) => {
+      //  Only the two unread bits. RS_MSG_TRASH is 0x20, inside the 0xf0 the
+      //  status is read through, so clearing the whole nibble also takes a
+      //  message out of the trash: opening one from there showed it as an
+      //  ordinary read mail until the next load.
+      if (msg.msgId === msgId) {
+        msg.msgflags &= ~(util.RS_MSG_NEW | util.RS_MSG_UNREAD_BY_USER);
+      }
+    });
+    Messages.recountUnread();
+  },
   load() {
     rs.rsJsonApiRequest('/rsMail/getMessageSummaries', { box: util.BOX_ALL }, (data) => {
       if (data && data.msgList) {
@@ -16848,6 +17136,8 @@ const Messages = {
         Messages.later = Messages.all.filter(
           (msg) => msg.msgtags && msg.msgtags.includes(util.RS_MSGTAGTYPE_LATER)
         );
+        Messages.recountUnread();
+        m.redraw();
       }
     });
   },
@@ -17034,6 +17324,10 @@ const GenericMailList = () => {
                   key: msg.msgId,
                   details: msg,
                   category,
+                  onOpen: () => {
+                    Messages.markReadLocally(msg.msgId);
+                    m.redraw();
+                  },
                 })
               )
             )
@@ -17045,6 +17339,7 @@ const GenericMailList = () => {
 };
 
 module.exports = {
+  Messages,
   view: ({ attrs, attrs: { tab, msgId } }) => {
     // TODO: utilize multiple routing params
     if (Object.prototype.hasOwnProperty.call(attrs, 'msgId')) {
@@ -17302,6 +17597,16 @@ const MailHoverState = {
   hoveredUser: null,
 };
 
+function markMessageRead(msgId, onDone) {
+  rs.rsJsonApiRequest(
+    '/rsMail/MessageRead',
+    { msgId, unreadByUser: false },
+    (data, success) => {
+      if (onDone) onDone(Boolean(success && (!data || data.retval !== false)));
+    }
+  );
+}
+
 function renderMailUserTooltip() {
   if (!MailHoverState.hoveredUser) return null;
   const hUser = MailHoverState.hoveredUser;
@@ -17420,8 +17725,10 @@ const MessageSummary = () => {
         {
           key: v.attrs.details.msgId,
           class: msgStatus,
-          onclick: () =>
-            m.route.set('/mail/:tab/:msgId', { tab: v.attrs.category, msgId: v.attrs.details.msgId }),
+          onclick: () => {
+            if (v.attrs.onOpen) v.attrs.onOpen();
+            m.route.set('/mail/:tab/:msgId', { tab: v.attrs.category, msgId: v.attrs.details.msgId });
+          },
         },
         [
           m(
@@ -17586,6 +17893,7 @@ const MessageView = () => {
 
   return {
     oninit: async (v) => {
+      markMessageRead(v.attrs.msgId);
       const res = await rs.rsJsonApiRequest('/rsMail/getMessage', {
         msgId: v.attrs.msgId,
       });
@@ -18068,6 +18376,7 @@ module.exports = {
   RS_MSGTAGTYPE_TODO,
   RS_MSGTAGTYPE_WORK,
   BOX_ALL,
+  markMessageRead,
 };
  
 }); 
@@ -18102,7 +18411,6 @@ module.exports = Layout;
 }); 
 require.register("network/network", function(exports, require, module) { 
 const m = require('mithril');
-const rs = require('rswebui');
 const Data = require('network/network_data');
 const compose = require('mail/mail_compose');
 const {
@@ -18132,11 +18440,6 @@ const NetworkLayout = () => {
       });
       loadOwnProfile();
       loadGxsIdentities();
-    },
-    onremove: () => {
-      if (rs.events[15]) {
-        rs.events[15].notify = () => {};
-      }
     },
     view: () => {
       const selectedFriend = State.selectedFriendGpgId
@@ -18196,7 +18499,7 @@ const NetworkLayout = () => {
           State.activeTab === 'graph'
             ? m('.network-tab-content.network-graph-tab', m(NetworkGraph))
             : selectedFriend
-              ? m('.network-tab-content', [
+              ? m('.network-tab-content' + (State.activeTab === 'chat' ? '.network-chat-tab-content' : ''), [
                   State.activeTab === 'details' ? m(DetailsTab) : m(ChatTab),
                 ])
               : m('.network-pane-placeholder', [
@@ -20218,8 +20521,7 @@ function preloadNetworkChatHistory() {
   });
 }
 
-function loadDirectChatMessages() {
-  rs.events[15].notify = (chatMessage) => {
+function receiveDirectChatMessage(chatMessage) {
     const messagePeerId = chatMessage.chat_id && chatMessage.chat_id.peer_id
       ? rs.idToHex(chatMessage.chat_id.peer_id)
       : '';
@@ -20242,6 +20544,7 @@ function loadDirectChatMessages() {
       };
 
       const isOpenConversation =
+        m.route.get().split('/')[1] === 'network' &&
         State.activeTab === 'chat' &&
         State.selectedFriendGpgId === gpgId &&
         normalizedPeerId === String(State.currentChatPeerId || '').toLowerCase() &&
@@ -20256,7 +20559,11 @@ function loadDirectChatMessages() {
       scrollChatToBottom();
     }
     m.redraw();
-  };
+}
+
+function loadDirectChatMessages() {
+  // Kept for older callers. Incoming messages are now dispatched globally by
+  // main.js so counters continue to work while another page is open.
 }
 
 function markDirectChatRead(gpgId) {
@@ -20407,6 +20714,7 @@ module.exports = {
   getOnlineSslId,
   preloadNetworkChatHistory,
   loadDirectChatMessages,
+  receiveDirectChatMessage,
   markDirectChatRead,
   loadRecentDirectChatHistory,
   loadAllDirectChatHistory,
@@ -20433,7 +20741,7 @@ const {
   initializeDistantChat,
   getDistantChatSession,
   drainBufferedChatMessages,
-  receiveDistantChatMessage,
+  markDistantChatRead,
 } = require('people/people_state');
 
 const PeopleSidebar = require('people/people_sidebar');
@@ -20485,9 +20793,6 @@ const PeopleLayout = () => {
       });
       window.addEventListener('click', dismissMenu);
 
-      // Register for chatEvents to receive live incoming messages
-      rs.events[15].notify = receiveDistantChatMessage;
-
       if (State.chatPid && !State.chatDisconnected) {
         //  Messages received while the tab was unmounted sit in the event
         //  queue buffer: pick them up before the first redraw.
@@ -20498,9 +20803,6 @@ const PeopleLayout = () => {
       }
     },
     onremove: () => {
-      if (rs.events[15]) {
-        rs.events[15].notify = () => {};
-      }
       stopStatusPolling();
       if (stopWatchingOwnIds) stopWatchingOwnIds();
       window.removeEventListener('click', dismissMenu);
@@ -20547,13 +20849,14 @@ const PeopleLayout = () => {
                       onclick: () => {
                         State.activeTab = 'chat';
                         State.mobilePane = 'detail';
+                        markDistantChatRead(State.selectedId);
                         initializeDistantChat();
                       },
                     },
                     'Chat Conversation'
                   ),
                 ]),
-                m('.network-tab-content', [
+                m('.network-tab-content' + (State.activeTab === 'chat' ? '.network-chat-tab-content' : ''), [
                   State.activeTab === 'details' ? m(DetailsTab) : m(ChatTab),
                 ]),
               ]
@@ -21218,7 +21521,8 @@ const DetailsTab = () => {
                           widget.popupMessage(
                             m(EditIdentity, {
                               details,
-                            })
+                            }),
+                            'edit-identity-modal'
                           ),
                       },
                       [m('i.fas.fa-edit'), m('span.btn-text', ' Edit')]
@@ -21753,17 +22057,19 @@ const EditIdentity = () => {
       const hasAvatar = Boolean(details.mAvatar && details.mAvatar.mData
         && details.mAvatar.mData.base64);
 
-      return [
-        m('i.fas.fa-user-edit'),
-        m('h3', 'Edit Identity'),
-        m('hr'),
-        m('input[type=text][placeholder=Name]', {
+      return m('.edit-identity-form', [
+        m('.edit-identity-form__heading', [
+          m('i.fas.fa-user-edit'),
+          m('h3', 'Edit Identity'),
+        ]),
+        m('label.edit-identity-form__name-label[for=edit-identity-name]', 'Identity name'),
+        m('input.edit-identity-form__name[type=text][placeholder=Name][id=edit-identity-name]', {
           value: name,
           oninput: (e) => {
             name = e.target.value;
           },
         }),
-        m('.edit-identity-avatar', { style: 'display:flex;align-items:center;gap:0.75rem;margin:0.75rem 0;' }, [
+        m('.edit-identity-form__avatar', [
           m(peopleUtil.UserAvatar, {
             avatar: avatarPreview
               ? { mData: { base64: avatarPreview.substring(avatarPreview.indexOf(',') + 1) } }
@@ -21787,9 +22093,9 @@ const EditIdentity = () => {
               reader.readAsDataURL(file);
             },
           }),
-          m('label.btn[for=edit-identity-avatar]', { style: 'cursor:pointer;' },
+          m('label.edit-identity-form__avatar-button[for=edit-identity-avatar]',
             [m('i.fas.fa-upload'), ' Change avatar']),
-          avatarPreview && m('button.btn[type=button]', {
+          avatarPreview && m('button.edit-identity-form__keep[type=button]', {
             onclick: () => {
               avatar = undefined;
               avatarPreview = '';
@@ -21799,6 +22105,7 @@ const EditIdentity = () => {
         m(
           'button',
           {
+            class: 'edit-identity-form__save',
             disabled: !String(name).trim(),
             onclick: () => {
               const trimmed = String(name).trim();
@@ -21831,7 +22138,7 @@ const EditIdentity = () => {
           },
           'Save'
         ),
-      ];
+      ]);
     },
   };
 };
@@ -21916,6 +22223,8 @@ const {
   get64Num,
   stopStatusPolling,
   initializeDistantChat,
+  markDistantChatRead,
+  isDistantChatActive,
 } = require('people/people_state');
 
 const LIST_RENDER_CAP = 200;
@@ -21948,7 +22257,8 @@ const PeopleSidebar = () => {
         const hist = State.chatHistoryMap[gxsId];
         return Boolean(hist && hist.lastMsg && !isSystemMsg(hist.lastMsg));
       });
-      const activeChatsCount = chatPeerIds.length;
+      const unreadChatsCount = Object.values(State.unreadChatCount || {})
+        .reduce((total, count) => total + count, 0);
 
       if (State.mainTab === 'people') {
         let baseList;
@@ -22043,7 +22353,7 @@ const PeopleSidebar = () => {
               [
                 m('i.fas.fa-comments'),
                 ' Chats',
-                activeChatsCount > 0 && m('span.segment-badge', activeChatsCount),
+                unreadChatsCount > 0 && m('span.segment-badge', unreadChatsCount),
               ]
             ),
           ]),
@@ -22112,6 +22422,7 @@ const PeopleSidebar = () => {
                   const itemEntry = rs.userList.userMap[gxsId];
                   const itemIsContact = itemEntry && itemEntry.isContact;
                   const itemIsOwn = State.ownGxsIds.includes(gxsId);
+                  const hasActiveTunnel = isDistantChatActive(gxsId);
 
                   const hist = State.chatHistoryMap[gxsId];
                   const lastTS = hist ? hist.lastTime : (itemDetails ? get64Num(itemDetails.mLastUsageTS) : 0);
@@ -22132,6 +22443,7 @@ const PeopleSidebar = () => {
                           State.selectedId = gxsId;
                           State.activeTab = 'chat';
                           State.mobilePane = 'detail';
+                          markDistantChatRead(gxsId);
                           initializeDistantChat();
                           m.redraw();
                         },
@@ -22159,8 +22471,11 @@ const PeopleSidebar = () => {
                           }),
                           m('.status-dot', {
                             style: {
-                              backgroundColor: itemIsContact || itemIsOwn ? '#22c55e' : '#cbd5e1',
+                              backgroundColor: hasActiveTunnel ? '#22c55e' : '#cbd5e1',
                             },
+                            title: hasActiveTunnel
+                              ? 'Distant chat tunnel active'
+                              : 'Distant chat tunnel inactive',
                           }),
                         ]),
                         m('.chat-info', [
@@ -22169,6 +22484,8 @@ const PeopleSidebar = () => {
                         ]),
                         m('.chat-meta', [
                           relativeTimeStr && m('.chat-time', relativeTimeStr),
+                          (State.unreadChatCount[gxsId] || 0) > 0
+                            && m('.chat-unread-badge', State.unreadChatCount[gxsId]),
                         ]),
                       ]
                     );
@@ -22357,6 +22674,7 @@ const State = {
   ownGxsIds: [],
   gpgToGxsIdMap: {},
   chatHistoryMap: {}, // gxsId -> { lastMsg, lastTime }
+  unreadChatCount: {}, // gxsId -> new incoming messages not yet opened
   showMailCompose: false,
   activeTab: 'details',
   mobilePane: 'list', // Phone master/detail navigation: 'list' | 'detail'
@@ -22990,14 +23308,7 @@ function leaveDistantChat(closed) {
   m.redraw();
 }
 
-//  Live incoming distant chat message, coming from the rsEvents stream.
-function receiveDistantChatMessage(chatMessage) {
-  const msgCid = chatMessage && chatMessage.chat_id;
-  if (!msgCid || msgCid.type !== 2) return;
-
-  const msgPid = rs.idToHex(msgCid.distant_chat_id);
-  if (!msgPid) return;
-
+function findDistantChatSession(msgPid) {
   let session = null;
   let targetGxsId = null;
   Object.keys(State.activeDistantChats || {}).forEach((id) => {
@@ -23015,7 +23326,48 @@ function receiveDistantChatMessage(chatMessage) {
     session = getDistantChatSession(targetGxsId);
     session.pid = msgPid;
   }
-  if (!session) return;
+  return { session, targetGxsId };
+}
+
+function isDistantChatActive(gxsId) {
+  const session = gxsId && State.activeDistantChats[gxsId];
+  return Boolean(
+    session
+      && session.pid
+      && !session.disconnected
+      && session.status
+      && session.status.status === 2
+  );
+}
+
+// A tunnel can survive a page reload, while activeDistantChats cannot. Resolve
+// its deterministic id against the small set of identities we can actually be
+// chatting with, so background messages still reach the People counter.
+async function resolveDistantChatPeer(msgPid) {
+  const ownIds = State.ownGxsIds.length > 0
+    ? State.ownGxsIds
+    : await peopleUtil.ownIds();
+  if (State.ownGxsIds.length === 0) State.ownGxsIds = ownIds || [];
+
+  const candidates = new Set([
+    State.selectedId,
+    ...Object.keys(State.chatHistoryMap || {}),
+    ...Object.keys(State.activeDistantChats || {}),
+  ].filter(peopleUtil.isUsableIdentityId));
+  peopleUtil.contactlist(rs.userList.users || []).forEach((user) => {
+    if (user && peopleUtil.isUsableIdentityId(user.mGroupId)) candidates.add(user.mGroupId);
+  });
+
+  for (const ownId of ownIds || []) {
+    for (const peerId of candidates) {
+      if (peopleUtil.distantChatPid(ownId, peerId) === msgPid) return peerId;
+    }
+  }
+  return null;
+}
+
+function recordDistantChatMessage(chatMessage, msgPid, session, targetGxsId) {
+  if (!session || !targetGxsId) return;
 
   if (!addSessionMessages(session, [chatMessage])) return;
 
@@ -23024,6 +23376,13 @@ function receiveDistantChatMessage(chatMessage) {
       lastMsg: chatMessage.msg || chatMessage.message || '',
       lastTime: chatMessage.sendTime || chatMessage.recvTime || Math.floor(Date.now() / 1000),
     };
+    const isOpenConversation = m.route.get().split('/')[1] === 'people'
+      && State.activeTab === 'chat'
+      && State.selectedId === targetGxsId
+      && (window.innerWidth > 700 || State.mobilePane === 'detail');
+    if (chatMessage.incoming === true && !isOpenConversation) {
+      State.unreadChatCount[targetGxsId] = (State.unreadChatCount[targetGxsId] || 0) + 1;
+    }
   }
 
   //  The view renders State.chatMessages, so it has to point at the session
@@ -23032,6 +23391,32 @@ function receiveDistantChatMessage(chatMessage) {
 
   m.redraw();
   if (State.selectedId === targetGxsId) scrollChatToBottom();
+}
+
+//  Live incoming distant chat message, coming from the rsEvents stream.
+function receiveDistantChatMessage(chatMessage) {
+  const msgCid = chatMessage && chatMessage.chat_id;
+  if (!msgCid || msgCid.type !== 2) return;
+
+  const msgPid = rs.idToHex(msgCid.distant_chat_id);
+  if (!msgPid) return;
+
+  const known = findDistantChatSession(msgPid);
+  if (known.session) {
+    recordDistantChatMessage(chatMessage, msgPid, known.session, known.targetGxsId);
+    return;
+  }
+
+  resolveDistantChatPeer(msgPid).then((targetGxsId) => {
+    if (!targetGxsId) return;
+    const session = getDistantChatSession(targetGxsId);
+    session.pid = msgPid;
+    recordDistantChatMessage(chatMessage, msgPid, session, targetGxsId);
+  });
+}
+
+function markDistantChatRead(gxsId) {
+  if (gxsId) State.unreadChatCount[gxsId] = 0;
 }
 
 //  Two /rsHistory/getMessages per known identity, and a node knows hundreds of
@@ -23184,9 +23569,11 @@ function preloadAllChatHistory() {
         if (pid) tasks.push(historyPreloadTask(gxsId, distantChatIdFor(pid), false));
       });
 
-      locationIdsOf(gxsId).forEach((sslId) => {
-        tasks.push(historyPreloadTask(gxsId, privateChatIdFor(sslId), true));
-      });
+      // Direct messages are keyed only by an SSL location, not by the GXS
+      // identity used for a distant chat. Assigning that same SSL history to
+      // every GXS identity belonging to the PGP friend creates duplicate chat
+      // rows. Direct chat belongs to Network; this list is keyed by the exact
+      // GXS identity whose distant tunnel history matched above.
     });
 
     if (tasks.length === 0) {
@@ -23271,9 +23658,11 @@ function loadAllHistoryForSelectedPeer(callback) {
 module.exports = {
   State,
   getDistantChatSession,
+  isDistantChatActive,
   addSessionMessages,
   drainBufferedChatMessages,
   receiveDistantChatMessage,
+  markDistantChatRead,
   scrollChatToBottom,
   isSystemMsg,
   preloadAllChatHistory,

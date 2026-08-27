@@ -1,4 +1,7 @@
 import java.io.ByteArrayOutputStream
+import java.time.LocalDate
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 
 plugins {
     id("com.android.application")
@@ -34,6 +37,7 @@ fun fetchGitCommitCount(): Int {
 val gitHash = fetchGitHash()
 val gitCommitCount = fetchGitCommitCount()
 val baseVersionName = "0.0.1"
+val buildDate = LocalDate.now(ZoneOffset.UTC).format(DateTimeFormatter.BASIC_ISO_DATE)
 
 android {
     namespace = "org.retroshare.rsweb"
@@ -54,6 +58,7 @@ android {
 
         buildConfigField("String", "GIT_HASH", "\"$gitHash\"")
         buildConfigField("String", "BUILD_VERSION", "\"$baseVersionName-g$gitHash\"")
+        buildConfigField("String", "BUILD_DATE", "\"$buildDate\"")
     }
 
     buildFeatures {
